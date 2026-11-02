@@ -12,6 +12,7 @@ thiserror = "2.0.0"
 anyhow = "1.0.104"
 bytes = "1.12.1"
 iroh = "1.4.1"
+iroh-tickets = "1.0.0"
 
 [workspace]
 members = [

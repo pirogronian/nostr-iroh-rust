@@ -8,7 +8,8 @@ use std::convert::TryInto;
 use std::array::TryFromSliceError;
 use std::str::Utf8Error;
 use std::num::TryFromIntError;
-use iroh::endpoint::{RecvStream, SendStream, ReadError, WriteError};
+use iroh::endpoint::{RecvStream, SendStream, ReadError, WriteError, Connection, Endpoint, presets};
+use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use log::{error, warn, info, debug};
 
 pub const ALPN: &[u8] = b"nostr-iroh-proxy/0";
@@ -31,6 +32,13 @@ impl ClientIrohPacket {
     }
     fn new() -> ClientIrohPacket {
         return ClientIrohPacket { flags: 0, id: "".to_string(), payload: "".to_string() }
+    }
+    fn dump(&self) {
+        println!("Packet from client:");
+        println!("Flags: {}", self.flags);
+        println!("Id: ({}) \"{}\"", self.id.len(), self.id);
+        println!("Payload: ({}) \"{}\"", self.payload.len(), self.id);
+        println!("-------------------------");
     }
 }
 
@@ -170,4 +178,37 @@ impl ClientIrohSendStream {
         self.stream.write_chunk(buf.freeze()).await?;
         Ok(())
     }
+}
+
+async fn test_relay_iroh_packet_receiver(stream: RecvStream) {
+    let mut rs = RelayIrohRecvStream::new(stream);
+    loop {
+        let ret = rs.read_packet().await;
+        match ret {
+            Ok(o) => {
+                match o {
+                    Some(p) => { p.dump(); },
+                    None => { debug!("Stream closed."); break; }
+                }
+            },
+            Err(e) => { error!("Error while reading packet from client: {}", e); break; }
+        }
+    }
+}
+
+async fn test_relay_iroh_connection_handler(conn: Connection) {
+
+}
+
+async fn test_client_iroh_packet_sender(ticket: EndpointTicket) {
+    let ret_ep = Endpoint::bind(presets::N0).await;
+    if let Err(e) = ret_ep { error!("Error while binding a test client endpoint: {}", e); return }
+    let ep = ret_ep.unwrap();
+    let ret_conn = ep.connect(ticket, ALPN).await;
+    if let Err(e) = ret_conn { error!("Error while connect a test client endpoint to a relay: {}", e); return }
+    let conn = ret_conn.unwrap();
+    let ret_stream = conn.open_uni().await;
+    if let Err(e) = ret_stream { error!("Error while opening a test sending stream to a relay: {}", e); return }
+    let stream = ret_stream.unwrap();
+    let sstream = ClientIrohSendStream::new(stream);
 }
