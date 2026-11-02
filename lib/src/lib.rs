@@ -154,7 +154,7 @@ pub struct ClientIrohSendStream {
 }
 
 impl ClientIrohSendStream {
-    fn new(mut stream: SendStream) -> ClientIrohSendStream {
+    fn new(stream: SendStream) -> ClientIrohSendStream {
         return ClientIrohSendStream { stream: stream }
     }
 

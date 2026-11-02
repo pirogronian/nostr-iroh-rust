@@ -11,6 +11,7 @@ use thiserror::Error;
 use directories::ProjectDirs;
 use iroh::{SecretKey, PublicKey};
 use iroh::endpoint;
+use tokio;
 
 #[derive(Error, Debug)]
 pub enum LoadSecKeyError {
@@ -86,7 +87,7 @@ fn publish_pub_key(pub_key: PublicKey) -> Result<(), std::io::Error> {
 }
 
 async fn init_endpoint(sec: SecretKey) -> Result<endpoint::Endpoint, endpoint::BindError> {
-    let mut ep = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::N0)
+    let ep = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::N0)
         .alpns(lib::ALPNs.to_vec())
         .secret_key(sec)
         .bind()
@@ -94,7 +95,8 @@ async fn init_endpoint(sec: SecretKey) -> Result<endpoint::Endpoint, endpoint::B
     ep
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     env_logger::init();
     let sec_ret = init_sec_key();
     if let Err(msg) = sec_ret {
@@ -102,14 +104,13 @@ fn main() {
         return
     }
     let sec = sec_ret.unwrap();
-    publish_pub_key(sec.public());
-    async {
-        let ep_ret = init_endpoint(sec).await;
-        if let Err(msg) = ep_ret {
-            error!("Cannot init the endpoint: {}", msg);
-            return
-        }
-        let mut ep = ep_ret.unwrap();
-    };
+    if let Err(e) = publish_pub_key(sec.public()) { error!("{}", e); }
+    let ep_ret = init_endpoint(sec).await;
+    if let Err(msg) = ep_ret {
+        error!("Cannot init the endpoint: {}", msg);
+        return
+    }
+    let ep = ep_ret.unwrap();
+    ep.close().await;
     ()
 }
