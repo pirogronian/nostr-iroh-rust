@@ -12,6 +12,7 @@ use directories::ProjectDirs;
 use iroh::{SecretKey, PublicKey};
 use iroh::endpoint;
 use tokio;
+use anyhow::Result;
 
 #[derive(Error, Debug)]
 pub enum LoadSecKeyError {
@@ -111,6 +112,7 @@ async fn main() {
         return
     }
     let ep = ep_ret.unwrap();
+    if let Err(e) = tokio::signal::ctrl_c().await { error!("{}", e) }
     ep.close().await;
     ()
 }
