@@ -30,8 +30,8 @@ impl ClientIrohPacket {
     fn is_persistent(&self) -> bool {
         ClientIrohPacket::EPHEMERAL & self.flags == 0
     }
-    fn new() -> ClientIrohPacket {
-        return ClientIrohPacket { flags: 0, id: "".to_string(), payload: "".to_string() }
+    fn new(flags: u32, id: String, payload: String) -> ClientIrohPacket {
+        return ClientIrohPacket { flags: flags, id: id, payload: payload }
     }
     fn dump(&self) {
         println!("Packet from client:");
@@ -77,7 +77,7 @@ impl RelayIrohRecvStream {
     }
 
     async fn read_packet(&mut self) -> Result<Option<ClientIrohPacket>, GetIrohPacketError> {
-        let mut packet: ClientIrohPacket = ClientIrohPacket::new();
+        let mut packet: ClientIrohPacket = ClientIrohPacket::new(0, "".to_string(), "".to_string());
         let mut buf: BytesMut = BytesMut::new();
         let mut id_len;
         let mut payl_len;
@@ -166,7 +166,7 @@ impl ClientIrohSendStream {
         return ClientIrohSendStream { stream: stream }
     }
 
-    async fn write_packet(&mut self, packet: &ClientIrohPacket) -> Result<(), SendIrohPacketError> {
+    async fn send_packet(&mut self, packet: &ClientIrohPacket) -> Result<(), SendIrohPacketError> {
         let mut buf: BytesMut = BytesMut::new();
         buf.put_u32(packet.flags);
         let id_len: u32 = packet.id.len().try_into()?;
@@ -202,13 +202,27 @@ async fn test_relay_iroh_connection_handler(conn: Connection) {
 
 async fn test_client_iroh_packet_sender(ticket: EndpointTicket) {
     let ret_ep = Endpoint::bind(presets::N0).await;
-    if let Err(e) = ret_ep { error!("Error while binding a test client endpoint: {}", e); return }
+    if let Err(e) = ret_ep {
+        error!("Error while binding a test client endpoint: {}", e);
+        return
+    }
     let ep = ret_ep.unwrap();
     let ret_conn = ep.connect(ticket, ALPN).await;
-    if let Err(e) = ret_conn { error!("Error while connect a test client endpoint to a relay: {}", e); return }
+    if let Err(e) = ret_conn {
+        error!("Error while connect a test client endpoint to a relay: {}", e);
+        ep.close();
+        return
+    }
     let conn = ret_conn.unwrap();
     let ret_stream = conn.open_uni().await;
-    if let Err(e) = ret_stream { error!("Error while opening a test sending stream to a relay: {}", e); return }
+    if let Err(e) = ret_stream {
+        error!("Error while opening a test sending stream to a relay: {}", e);
+        conn.close(0u32.into(), &[]);
+        return
+    }
     let stream = ret_stream.unwrap();
-    let sstream = ClientIrohSendStream::new(stream);
+    let mut sstream = ClientIrohSendStream::new(stream);
+    let packet = ClientIrohPacket::new(13, "id123".to_string(), "Kubuś Puchatek".to_string());
+    let ret_send = sstream.send_packet(&packet);
+    
 }
