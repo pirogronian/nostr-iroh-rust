@@ -8,9 +8,10 @@ use std::convert::TryInto;
 use std::array::TryFromSliceError;
 use std::str::Utf8Error;
 use std::num::TryFromIntError;
-use iroh::endpoint::{RecvStream, SendStream, ReadError, WriteError, Connection, Endpoint, presets};
+use iroh::{EndpointAddr, endpoint::{Connection, Endpoint, ReadError, RecvStream, SendStream, WriteError, presets}};
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use log::{error, warn, info, debug};
+use tokio;
 
 pub const ALPN: &[u8] = b"nostr-iroh-proxy/0";
 
@@ -37,7 +38,7 @@ impl ClientIrohPacket {
         println!("Packet from client:");
         println!("Flags: {}", self.flags);
         println!("Id: ({}) \"{}\"", self.id.len(), self.id);
-        println!("Payload: ({}) \"{}\"", self.payload.len(), self.id);
+        println!("Payload: ({}) \"{}\"", self.payload.len(), self.payload);
         println!("-------------------------");
     }
 }
@@ -166,6 +167,8 @@ impl ClientIrohSendStream {
         return ClientIrohSendStream { stream: stream }
     }
 
+    fn finish(&mut self) { self.stream.finish(); }
+
     async fn send_packet(&mut self, packet: &ClientIrohPacket) -> Result<(), SendIrohPacketError> {
         let mut buf: BytesMut = BytesMut::new();
         buf.put_u32(packet.flags);
@@ -180,7 +183,7 @@ impl ClientIrohSendStream {
     }
 }
 
-async fn test_relay_iroh_packet_receiver(stream: RecvStream) {
+pub async fn test_relay_iroh_packet_receiver(stream: RecvStream) {
     let mut rs = RelayIrohRecvStream::new(stream);
     loop {
         let ret = rs.read_packet().await;
@@ -196,21 +199,45 @@ async fn test_relay_iroh_packet_receiver(stream: RecvStream) {
     }
 }
 
-async fn test_relay_iroh_connection_handler(conn: Connection) {
-
+pub async fn test_relay_iroh_connection_handler(conn: Connection) {
+    loop {
+        let ret_stream = conn.accept_uni().await;
+        if let Err(e) = ret_stream {
+            error!("Error while waiting for stream: {}", e);
+            break;
+        }
+        let stream = ret_stream.unwrap();
+        tokio::spawn(test_relay_iroh_packet_receiver(stream));
+    }
 }
 
-async fn test_client_iroh_packet_sender(ticket: EndpointTicket) {
+pub async fn test_relay_handler(endpoint: Endpoint) {
+    loop {
+        let ret_incoming = endpoint.accept().await;
+        if ret_incoming.is_none() { info!("No more connection to accept, breaking."); break; }
+        let ret_acc = ret_incoming.unwrap().accept();
+        if let Err(e) = ret_acc { info!("Error while accepting connection: {}", e); continue; }
+        let ret_con = ret_acc.unwrap().await;
+        if let Err(e) = ret_con { info!("Error while remote connection: {}", e); continue; }
+        let conn = ret_con.unwrap();
+        tokio::spawn(test_relay_iroh_connection_handler(conn));
+    }
+    endpoint.close().await;
+}
+
+pub async fn test_client_iroh_packet_sender(addr: EndpointAddr) {
+    debug!("Test client started. Connecting to: {:?}", addr);
     let ret_ep = Endpoint::bind(presets::N0).await;
     if let Err(e) = ret_ep {
         error!("Error while binding a test client endpoint: {}", e);
         return
     }
     let ep = ret_ep.unwrap();
-    let ret_conn = ep.connect(ticket, ALPN).await;
+    let ret_conn = ep.connect(addr, ALPN).await;
     if let Err(e) = ret_conn {
         error!("Error while connect a test client endpoint to a relay: {}", e);
         ep.close();
+        ep.closed().await;
         return
     }
     let conn = ret_conn.unwrap();
@@ -218,11 +245,15 @@ async fn test_client_iroh_packet_sender(ticket: EndpointTicket) {
     if let Err(e) = ret_stream {
         error!("Error while opening a test sending stream to a relay: {}", e);
         conn.close(0u32.into(), &[]);
+        conn.closed().await;
         return
     }
     let stream = ret_stream.unwrap();
     let mut sstream = ClientIrohSendStream::new(stream);
     let packet = ClientIrohPacket::new(13, "id123".to_string(), "Kubuś Puchatek".to_string());
-    let ret_send = sstream.send_packet(&packet);
-    
+    let ret_send = sstream.send_packet(&packet).await;
+    if let Err(e) = ret_send { error!("Error while sending test packet to relay: {}", e); }
+    sstream.finish();
+    ep.close().await;
+    debug!("Test client closed.");
 }

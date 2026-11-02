@@ -1,4 +1,6 @@
 
+use lib::test_client_iroh_packet_sender;
+use lib::test_relay_handler;
 use log::{error, warn, info, debug};
 use std::path::PathBuf;
 use std::fs::File;
@@ -112,6 +114,10 @@ async fn main() {
         return
     }
     let ep = ep_ret.unwrap();
+    let addr = ep.addr();
+    debug!("Spawning test relay with addr: {:?}", addr);
+    tokio::spawn(test_relay_handler(ep.clone()));
+    test_client_iroh_packet_sender(addr).await;
     if let Err(e) = tokio::signal::ctrl_c().await { error!("{}", e) }
     ep.close().await;
     ()

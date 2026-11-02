@@ -9,3 +9,4 @@ iroh-tickets = { workspace = true }
 bytes = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
