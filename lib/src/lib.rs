@@ -14,26 +14,26 @@ pub const ALPN: &[u8] = b"nostr-iroh-proxy/0";
 
 pub static ALPNs: LazyLock<Vec<Vec<u8>>> = LazyLock::new(|| { vec![(ALPN.to_vec())] });
 
-pub struct IrohClientPacket {
+pub struct ClientIrohPacket {
     pub flags: u32,
     pub id: String,
     pub payload: String
 }
 
-impl IrohClientPacket {
+impl ClientIrohPacket {
     pub const EPHEMERAL: u32 = 1;
     fn is_ephemeral(&self) -> bool {
-        IrohClientPacket::EPHEMERAL & self.flags > 0
+        ClientIrohPacket::EPHEMERAL & self.flags > 0
     }
     fn is_persistent(&self) -> bool {
-        IrohClientPacket::EPHEMERAL & self.flags == 0
+        ClientIrohPacket::EPHEMERAL & self.flags == 0
     }
-    fn new() -> IrohClientPacket {
-        return IrohClientPacket { flags: 0, id: "".to_string(), payload: "".to_string() }
+    fn new() -> ClientIrohPacket {
+        return ClientIrohPacket { flags: 0, id: "".to_string(), payload: "".to_string() }
     }
 }
 
-pub struct IrohRelayPacket {
+pub struct RelayIrohPacket {
     pub payload: String
 }
 
@@ -47,20 +47,20 @@ pub enum IrohPacketError {
     Utf8Error(#[from] Utf8Error)
 }
 
-pub struct IrohClientRecvStream {
+pub struct RelayIrohRecvStream {
     stream: RecvStream,
     current_chunk: Bytes
 }
 
-impl IrohClientRecvStream {
+impl RelayIrohRecvStream {
     pub const MAX_CHUNK_SIZE: usize = 1024*8;
 
-    fn new(mut stream: RecvStream) -> IrohClientRecvStream {
-        return IrohClientRecvStream { stream: stream, current_chunk: Bytes::new() }
+    fn new(mut stream: RecvStream) -> RelayIrohRecvStream {
+        return RelayIrohRecvStream { stream: stream, current_chunk: Bytes::new() }
     }
 
-    async fn read_packet(&mut self) -> Result<Option<IrohClientPacket>, IrohPacketError> {
-        let mut packet: IrohClientPacket = IrohClientPacket::new();
+    async fn read_packet(&mut self) -> Result<Option<ClientIrohPacket>, IrohPacketError> {
+        let mut packet: ClientIrohPacket = ClientIrohPacket::new();
         let mut buf: BytesMut = BytesMut::new();
         let mut id_len;
         let mut payl_len;
