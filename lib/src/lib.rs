@@ -2,12 +2,13 @@
 use std::vec::Vec;
 use std::io::Read;
 use std::sync::LazyLock;
-use bytes::{Bytes, BytesMut};
+use bytes::{Bytes, BytesMut, BufMut};
 use thiserror::Error;
 use std::convert::TryInto;
 use std::array::TryFromSliceError;
 use std::str::Utf8Error;
-use iroh::endpoint::{RecvStream, ReadError};
+use std::num::TryFromIntError;
+use iroh::endpoint::{RecvStream, SendStream, ReadError, WriteError};
 use log::{error, warn, info, debug};
 
 pub const ALPN: &[u8] = b"nostr-iroh-proxy/0";
@@ -38,13 +39,21 @@ pub struct RelayIrohPacket {
 }
 
 #[derive(Error, Debug)]
-pub enum IrohPacketError {
+pub enum GetIrohPacketError {
     #[error("Data read error: {0}")]
     DataReadError(#[from] ReadError),
     #[error("Error while converting bytes into u32: {0}")]
     U32ConvertError(#[from] TryFromSliceError),
     #[error("Error while converting bytes into UTF-8: {0}")]
     Utf8Error(#[from] Utf8Error)
+}
+
+#[derive(Error, Debug)]
+pub enum SendIrohPacketError {
+    #[error("Data write error: {0}")]
+    DataWriteError(#[from] WriteError),
+    #[error("Error while converting u32 into bytes: {0}")]
+    U32ConvertError(#[from]  TryFromIntError)
 }
 
 pub struct RelayIrohRecvStream {
@@ -55,11 +64,11 @@ pub struct RelayIrohRecvStream {
 impl RelayIrohRecvStream {
     pub const MAX_CHUNK_SIZE: usize = 1024*8;
 
-    fn new(mut stream: RecvStream) -> RelayIrohRecvStream {
+    fn new(stream: RecvStream) -> RelayIrohRecvStream {
         return RelayIrohRecvStream { stream: stream, current_chunk: Bytes::new() }
     }
 
-    async fn read_packet(&mut self) -> Result<Option<ClientIrohPacket>, IrohPacketError> {
+    async fn read_packet(&mut self) -> Result<Option<ClientIrohPacket>, GetIrohPacketError> {
         let mut packet: ClientIrohPacket = ClientIrohPacket::new();
         let mut buf: BytesMut = BytesMut::new();
         let mut id_len;
@@ -137,5 +146,28 @@ impl RelayIrohRecvStream {
             }
         }
         return Ok(Some(packet));
+    }
+}
+
+pub struct ClientIrohSendStream {
+    stream: SendStream
+}
+
+impl ClientIrohSendStream {
+    fn new(mut stream: SendStream) -> ClientIrohSendStream {
+        return ClientIrohSendStream { stream: stream }
+    }
+
+    async fn write_packet(&mut self, packet: &ClientIrohPacket) -> Result<(), SendIrohPacketError> {
+        let mut buf: BytesMut = BytesMut::new();
+        buf.put_u32(packet.flags);
+        let id_len: u32 = packet.id.len().try_into()?;
+        buf.put_u32(id_len);
+        let payl_len: u32 = packet.payload.len().try_into()?;
+        buf.put_u32(payl_len);
+        buf.extend_from_slice(packet.id.as_bytes());
+        buf.extend_from_slice(packet.payload.as_bytes());
+        self.stream.write_chunk(buf.freeze()).await?;
+        Ok(())
     }
 }
