@@ -55,6 +55,10 @@ pub struct IrohClientRecvStream {
 impl IrohClientRecvStream {
     pub const MAX_CHUNK_SIZE: usize = 1024*8;
 
+    fn new(mut stream: RecvStream) -> IrohClientRecvStream {
+        return IrohClientRecvStream { stream: stream, current_chunk: Bytes::new() }
+    }
+
     async fn read_packet(&mut self) -> Result<Option<IrohClientPacket>, IrohPacketError> {
         let mut packet: IrohClientPacket = IrohClientPacket::new();
         let mut buf: BytesMut = BytesMut::new();
