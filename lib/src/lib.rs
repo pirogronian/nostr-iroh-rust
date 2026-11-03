@@ -17,22 +17,22 @@ pub const ALPN: &[u8] = b"nostr-iroh-proxy/0";
 
 pub static ALPNs: LazyLock<Vec<Vec<u8>>> = LazyLock::new(|| { vec![(ALPN.to_vec())] });
 
-pub struct ClientIrohPacket {
+pub struct IrohPacket {
     pub flags: u32,
     pub id: String,
     pub payload: String
 }
 
-impl ClientIrohPacket {
+impl IrohPacket {
     pub const EPHEMERAL: u32 = 1;
     fn is_ephemeral(&self) -> bool {
-        ClientIrohPacket::EPHEMERAL & self.flags > 0
+        IrohPacket::EPHEMERAL & self.flags > 0
     }
     fn is_persistent(&self) -> bool {
-        ClientIrohPacket::EPHEMERAL & self.flags == 0
+        IrohPacket::EPHEMERAL & self.flags == 0
     }
-    fn new(flags: u32, id: String, payload: String) -> ClientIrohPacket {
-        return ClientIrohPacket { flags: flags, id: id, payload: payload }
+    fn new(flags: u32, id: String, payload: String) -> IrohPacket {
+        return IrohPacket { flags: flags, id: id, payload: payload }
     }
     fn dump(&self) {
         println!("Packet from client:");
@@ -41,10 +41,6 @@ impl ClientIrohPacket {
         println!("Payload: ({}) \"{}\"", self.payload.len(), self.payload);
         println!("-------------------------");
     }
-}
-
-pub struct RelayIrohPacket {
-    pub payload: String
 }
 
 #[derive(Error, Debug)]
@@ -65,20 +61,20 @@ pub enum SendIrohPacketError {
     U32ConvertError(#[from]  TryFromIntError)
 }
 
-pub struct RelayIrohRecvStream {
+pub struct IrohRecvStream {
     stream: RecvStream,
     current_chunk: Bytes
 }
 
-impl RelayIrohRecvStream {
+impl IrohRecvStream {
     pub const MAX_CHUNK_SIZE: usize = 1024*8;
 
-    fn new(stream: RecvStream) -> RelayIrohRecvStream {
-        return RelayIrohRecvStream { stream: stream, current_chunk: Bytes::new() }
+    fn new(stream: RecvStream) -> IrohRecvStream {
+        return IrohRecvStream { stream: stream, current_chunk: Bytes::new() }
     }
 
-    async fn read_packet(&mut self) -> Result<Option<ClientIrohPacket>, GetIrohPacketError> {
-        let mut packet: ClientIrohPacket = ClientIrohPacket::new(0, "".to_string(), "".to_string());
+    async fn read_packet(&mut self) -> Result<Option<IrohPacket>, GetIrohPacketError> {
+        let mut packet: IrohPacket = IrohPacket::new(0, "".to_string(), "".to_string());
         let mut buf: BytesMut = BytesMut::new();
         let mut id_len;
         let mut payl_len;
@@ -158,18 +154,18 @@ impl RelayIrohRecvStream {
     }
 }
 
-pub struct ClientIrohSendStream {
+pub struct IrohSendStream {
     stream: SendStream
 }
 
-impl ClientIrohSendStream {
-    fn new(stream: SendStream) -> ClientIrohSendStream {
-        return ClientIrohSendStream { stream: stream }
+impl IrohSendStream {
+    fn new(stream: SendStream) -> IrohSendStream {
+        return IrohSendStream { stream: stream }
     }
 
     fn finish(&mut self) { self.stream.finish(); }
 
-    async fn send_packet(&mut self, packet: &ClientIrohPacket) -> Result<(), SendIrohPacketError> {
+    async fn send_packet(&mut self, packet: &IrohPacket) -> Result<(), SendIrohPacketError> {
         let mut buf: BytesMut = BytesMut::new();
         buf.put_u32(packet.flags);
         let id_len: u32 = packet.id.len().try_into()?;
@@ -184,7 +180,7 @@ impl ClientIrohSendStream {
 }
 
 pub async fn test_relay_iroh_packet_receiver(stream: RecvStream) {
-    let mut rs = RelayIrohRecvStream::new(stream);
+    let mut rs = IrohRecvStream::new(stream);
     loop {
         let ret = rs.read_packet().await;
         match ret {
@@ -207,6 +203,7 @@ pub async fn test_relay_iroh_connection_handler(conn: Connection) {
             break;
         }
         let stream = ret_stream.unwrap();
+        debug!("Test relay: Spawning stream handler.");
         tokio::spawn(test_relay_iroh_packet_receiver(stream));
     }
 }
@@ -220,6 +217,7 @@ pub async fn test_relay_handler(endpoint: Endpoint) {
         let ret_con = ret_acc.unwrap().await;
         if let Err(e) = ret_con { info!("Error while remote connection: {}", e); continue; }
         let conn = ret_con.unwrap();
+        debug!("Test relay: Spawning connection handler.");
         tokio::spawn(test_relay_iroh_connection_handler(conn));
     }
     endpoint.close().await;
@@ -236,7 +234,7 @@ pub async fn test_client_iroh_packet_sender(addr: EndpointAddr) {
     let ret_conn = ep.connect(addr, ALPN).await;
     if let Err(e) = ret_conn {
         error!("Error while connect a test client endpoint to a relay: {}", e);
-        ep.close();
+        ep.close().await;
         ep.closed().await;
         return
     }
@@ -249,11 +247,12 @@ pub async fn test_client_iroh_packet_sender(addr: EndpointAddr) {
         return
     }
     let stream = ret_stream.unwrap();
-    let mut sstream = ClientIrohSendStream::new(stream);
-    let packet = ClientIrohPacket::new(13, "id123".to_string(), "Kubuś Puchatek".to_string());
+    let mut sstream = IrohSendStream::new(stream);
+    let packet = IrohPacket::new(13, "id123".to_string(), "Kubuś Puchatek".to_string());
     let ret_send = sstream.send_packet(&packet).await;
     if let Err(e) = ret_send { error!("Error while sending test packet to relay: {}", e); }
     sstream.finish();
+    conn.closed().await;
     ep.close().await;
     debug!("Test client closed.");
 }
