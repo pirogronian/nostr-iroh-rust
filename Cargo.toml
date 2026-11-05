@@ -13,6 +13,9 @@ anyhow = "1.0.104"
 bytes = "1.12.1"
 iroh = "1.4.1"
 iroh-tickets = "1.0.0"
+sonic-rs = "0.5"
+hashbrown = "0.17"
+ahash = "0.8"
 
 [workspace]
 members = [

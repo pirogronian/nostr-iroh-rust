@@ -12,6 +12,9 @@ use iroh::{EndpointAddr, endpoint::{Connection, Endpoint, ReadError, RecvStream,
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use log::{error, warn, info, debug};
 use tokio;
+use sonic_rs::{JsonPointer, PointerNode, JsonValueTrait};
+use ahash::RandomState;
+use std::fmt::{Formatter};
 
 pub mod test;
 
@@ -178,5 +181,53 @@ impl IrohSendStream {
         buf.extend_from_slice(packet.payload.as_bytes());
         self.stream.write_chunk(buf.freeze()).await?;
         Ok(())
+    }
+}
+
+pub struct PacketSessionInfo<'a> {
+    id: sonic_rs::LazyValue<'a>,
+    closing: bool
+}
+
+struct WebSocketPacketInfo<'a> {
+    id_path: &'a sonic_rs::JsonPointer,
+    closing: bool
+}
+pub struct WebSocketPacketsDatabase<'a> {
+    map: hashbrown::HashMap<String, WebSocketPacketInfo<'a>, RandomState>
+}
+
+impl<'a> WebSocketPacketsDatabase<'a> {
+    pub fn new() -> Self {
+        Self {
+            map: hashbrown::HashMap::with_hasher(RandomState::default())
+        }
+    }
+
+    pub fn add(&mut self, cmd: &str, ptr: &'a JsonPointer, closing: bool) {
+        self.map.insert(format!("\"{}\"", cmd), WebSocketPacketInfo { id_path: ptr, closing: closing });
+    }
+
+    pub fn get(&self, cmd: &str) -> Option<&WebSocketPacketInfo<'_>> {
+        self.map.get(cmd)
+    }
+}
+
+pub struct WebSocketPacketAnalyzer<'db, 'a> {
+    db: &'db WebSocketPacketsDatabase<'a>
+}
+
+impl<'db, 'a> WebSocketPacketAnalyzer<'db, 'a> {
+    pub fn new(db: &'db WebSocketPacketsDatabase<'a>) -> Self {
+        Self { db: db }
+    }
+
+    pub fn get_info<'s>(&self, data: &'s str) -> Result<Option<PacketSessionInfo<'s>>, sonic_rs::Error> {
+        let ret_cmd = sonic_rs::get(data, sonic_rs::pointer![0])?;
+        let cmd = ret_cmd.as_raw_str();
+        let Some(info) = self.db.get(cmd)
+        else { return Ok(None) };
+        let id = sonic_rs::get(data, info.id_path)?;
+        Ok(Some(PacketSessionInfo { id, closing: info.closing }))
     }
 }
