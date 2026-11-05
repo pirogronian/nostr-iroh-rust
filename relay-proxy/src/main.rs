@@ -1,6 +1,6 @@
 
-use lib::test_client_iroh_packet_sender;
-use lib::test_relay_handler;
+use lib::test::test_client_iroh_packet_sender;
+use lib::test::test_relay_handler;
 use log::{error, warn, info, debug};
 use std::path::PathBuf;
 use std::fs::File;
