@@ -103,12 +103,13 @@ impl IrohRecvStream {
                 let op = self.stream.read_chunk(Self::MAX_CHUNK_SIZE).await?;
                 if op == None { return Err(UnexpectedEOS) }
                 self.current_chunk = op.unwrap();
-                if buf.len() + self.current_chunk.len() <= 12 {
+                if buf.len() + self.current_chunk.len() > 12 {
                     let rest = self.current_chunk.split_to(12 - buf.len());
                     buf.extend_from_slice(&rest);
                     break;
                 }
                 buf.extend_from_slice(&self.current_chunk)
+                if buf.len() == 12 { break }
             }
             packet.flags = u32::from_be_bytes(buf[..4].try_into()?);
             id_len = u32::from_be_bytes(buf[4..8].try_into()?) as usize;
