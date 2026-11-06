@@ -16,6 +16,8 @@ use sonic_rs::{JsonPointer, PointerNode, JsonValueTrait};
 use ahash::RandomState;
 use std::fmt::{Formatter};
 
+use crate::GetIrohPacketError::UnexpectedEOS;
+
 pub mod test;
 
 pub const ALPN: &[u8] = b"nostr-iroh-proxy/0";
@@ -55,7 +57,9 @@ pub enum GetIrohPacketError {
     #[error("Error while converting bytes into u32: {0}")]
     U32ConvertError(#[from] TryFromSliceError),
     #[error("Error while converting bytes into UTF-8: {0}")]
-    Utf8Error(#[from] Utf8Error)
+    Utf8Error(#[from] Utf8Error),
+    #[error("Unexpected EOS")]
+    UnexpectedEOS
 }
 
 #[derive(Error, Debug)]
@@ -97,7 +101,7 @@ impl IrohRecvStream {
             buf.extend_from_slice(&self.current_chunk);
             loop {
                 let op = self.stream.read_chunk(Self::MAX_CHUNK_SIZE).await?;
-                if op == None { return Ok(None) }
+                if op == None { return Err(UnexpectedEOS) }
                 self.current_chunk = op.unwrap();
                 if buf.len() + self.current_chunk.len() <= 12 {
                     let rest = self.current_chunk.split_to(12 - buf.len());
@@ -119,7 +123,7 @@ impl IrohRecvStream {
             if self.current_chunk.len() > 0 { buf.extend_from_slice(&self.current_chunk); }
             loop {
                 let op = self.stream.read_chunk(Self::MAX_CHUNK_SIZE).await?;
-                if op == None { return Ok(None) }
+                if op == None { return Err(UnexpectedEOS) }
                 self.current_chunk = op.unwrap();
                 if self.current_chunk.len() + buf.len() >= id_len {
                     let rest = self.current_chunk.split_to(id_len - buf.len());
@@ -141,7 +145,7 @@ impl IrohRecvStream {
             if self.current_chunk.len() > 0 { buf.extend_from_slice(&self.current_chunk); }
             loop {
                 let op = self.stream.read_chunk(Self::MAX_CHUNK_SIZE).await?;
-                if op == None { return Ok(None) }
+                if op == None { return Err(UnexpectedEOS) }
                 self.current_chunk = op.unwrap();
                 if self.current_chunk.len() + buf.len() >= payl_len {
                     let rest = self.current_chunk.split_to(payl_len - buf.len());
@@ -164,13 +168,13 @@ pub struct IrohSendStream {
 }
 
 impl IrohSendStream {
-    fn new(stream: SendStream) -> IrohSendStream {
+    pub fn new(stream: SendStream) -> IrohSendStream {
         return IrohSendStream { stream: stream }
     }
 
-    fn finish(&mut self) { self.stream.finish(); }
+    pub fn finish(&mut self) { self.stream.finish(); }
 
-    async fn send_packet(&mut self, packet: &IrohPacket) -> Result<(), SendIrohPacketError> {
+    pub async fn send_packet(&mut self, packet: &IrohPacket) -> Result<(), SendIrohPacketError> {
         let mut buf: BytesMut = BytesMut::new();
         buf.put_u32(packet.flags);
         let id_len: u32 = packet.id.len().try_into()?;
@@ -229,5 +233,68 @@ impl<'db, 'a> WebSocketPacketAnalyzer<'db, 'a> {
         else { return Ok(None) };
         let id = sonic_rs::get(data, info.id_path)?;
         Ok(Some(PacketSessionInfo { id, closing: info.closing }))
+    }
+}
+
+//type IrohRecvStreamMap = dashmap::DashMap<String, RecvStream, ahash::RandomState>;
+type IrohSendStreamMap = dashmap::DashMap<String, IrohSendStream, ahash::RandomState>;
+
+pub struct IrohConnection {
+    connection: Connection,
+//    recv_streams: IrohRecvStreamMap,
+    send_streams: IrohSendStreamMap
+}
+
+pub enum IrohConnectionSendStreamOrId {
+    SendStream(IrohSendStream),
+    StreamExternalId(String)
+}
+
+impl IrohConnection {
+    pub fn new(conn: Connection) -> Self {
+        Self { connection: conn,
+            send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()) }
+    }
+
+    pub async fn handle_recv_stream(
+        &self,
+        stream: RecvStream,
+        ss_or_id: IrohConnectionSendStreamOrId) -> Result<(), GetIrohPacketError>
+    {
+        let mut irs: IrohRecvStream = IrohRecvStream::new(stream);
+        let mut res: Result<(), GetIrohPacketError> = Ok(());
+        let mut stream_id = "".to_string();
+        let mut external_id: Option<String> = None;
+        let mut iroh_send_stream: Option<IrohSendStream> = None;
+        match ss_or_id {
+            IrohConnectionSendStreamOrId::StreamExternalId(s) => { stream_id = s; },
+            IrohConnectionSendStreamOrId::SendStream(ss) => { iroh_send_stream = Some(ss); }
+        };
+        let mut first_packet = true;
+        loop {
+            let packet_result = irs.read_packet().await;
+            let packet_op: Option<IrohPacket> = match packet_result {
+                Ok(packet) => packet,
+                Err(e) => { error!("Read packet error: {}", e); res = Err(e); break; }
+            };
+            match packet_op {
+                None => { debug!("Stream closed."); break },
+                Some(packet) => {
+                    if first_packet && let Some(s) = iroh_send_stream.take() {
+                        stream_id = packet.id; first_packet = false;
+                        if self.send_streams.contains_key(&stream_id) {
+                            error!("Another stream with id {} already registered!", stream_id);
+                        }
+                        self.send_streams.insert(stream_id.clone(), s);
+                    } else {
+                        if stream_id != packet.id {
+                            error!("Packet id inequal to stream id: {} != {}", stream_id, packet.id);
+                        }
+                        /* TODO: Froward data to WebSocket */
+                    }
+                }
+            };
+        }
+        Ok(())
     }
 }

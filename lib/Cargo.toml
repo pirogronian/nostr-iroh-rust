@@ -13,3 +13,4 @@ tokio = { workspace = true }
 sonic-rs = { workspace = true }
 hashbrown = { workspace = true }
 ahash = { workspace = true }
+dashmap = { workspace = true }
