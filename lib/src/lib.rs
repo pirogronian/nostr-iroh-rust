@@ -108,7 +108,7 @@ impl IrohRecvStream {
                     buf.extend_from_slice(&rest);
                     break;
                 }
-                buf.extend_from_slice(&self.current_chunk)
+                buf.extend_from_slice(&self.current_chunk);
                 if buf.len() == 12 { break }
             }
             packet.flags = u32::from_be_bytes(buf[..4].try_into()?);
@@ -240,18 +240,18 @@ impl<'db, 'a> WebSocketPacketAnalyzer<'db, 'a> {
 //type IrohRecvStreamMap = dashmap::DashMap<String, RecvStream, ahash::RandomState>;
 type IrohSendStreamMap = dashmap::DashMap<String, IrohSendStream, ahash::RandomState>;
 
-pub struct IrohConnection {
+pub struct ConnectionBridge {
     connection: Connection,
 //    recv_streams: IrohRecvStreamMap,
     send_streams: IrohSendStreamMap
 }
 
-pub enum IrohConnectionSendStreamOrId {
+pub enum ConnectionBridgeSendStreamOrId {
     SendStream(IrohSendStream),
     StreamExternalId(String)
 }
 
-impl IrohConnection {
+impl ConnectionBridge {
     pub fn new(conn: Connection) -> Self {
         Self { connection: conn,
             send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()) }
@@ -260,7 +260,7 @@ impl IrohConnection {
     pub async fn handle_recv_stream(
         &self,
         stream: RecvStream,
-        ss_or_id: IrohConnectionSendStreamOrId) -> Result<(), GetIrohPacketError>
+        ss_or_id: ConnectionBridgeSendStreamOrId) -> Result<(), GetIrohPacketError>
     {
         let mut irs: IrohRecvStream = IrohRecvStream::new(stream);
         let mut res: Result<(), GetIrohPacketError> = Ok(());
@@ -268,8 +268,8 @@ impl IrohConnection {
         let mut external_id: Option<String> = None;
         let mut iroh_send_stream: Option<IrohSendStream> = None;
         match ss_or_id {
-            IrohConnectionSendStreamOrId::StreamExternalId(s) => { stream_id = s; },
-            IrohConnectionSendStreamOrId::SendStream(ss) => { iroh_send_stream = Some(ss); }
+            ConnectionBridgeSendStreamOrId::StreamExternalId(s) => { stream_id = s; },
+            ConnectionBridgeSendStreamOrId::SendStream(ss) => { iroh_send_stream = Some(ss); }
         };
         let mut first_packet = true;
         loop {
