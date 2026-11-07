@@ -17,6 +17,7 @@ sonic-rs = "0.5"
 hashbrown = "0.17"
 ahash = "0.8"
 dashmap = "6.2"
+tokio-websockets = "0.13"
 
 [workspace]
 members = [

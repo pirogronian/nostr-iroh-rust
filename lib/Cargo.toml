@@ -14,3 +14,5 @@ sonic-rs = { workspace = true }
 hashbrown = { workspace = true }
 ahash = { workspace = true }
 dashmap = { workspace = true }
+tokio-websockets = { workspace = true }
+futures-util = { workspace = true }

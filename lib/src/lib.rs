@@ -12,10 +12,14 @@ use iroh::{EndpointAddr, endpoint::{Connection, ConnectionError, Endpoint, ReadE
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use log::{error, warn, info, debug};
 use tokio;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::Mutex;
 use sonic_rs::{JsonPointer, PointerNode, JsonValueTrait};
 use ahash::RandomState;
 use std::fmt::{Formatter};
 use std::sync::Arc;
+use tokio_websockets::proto::{WebSocketStream, Message};
+use futures_util::{SinkExt, StreamExt};
 
 use crate::GetIrohPacketError::UnexpectedEOS;
 
@@ -241,8 +245,10 @@ impl<'db, 'a> WebSocketPacketAnalyzer<'db, 'a> {
 //type IrohRecvStreamMap = dashmap::DashMap<String, RecvStream, ahash::RandomState>;
 type IrohSendStreamMap = dashmap::DashMap<String, Arc<IrohSendStream>, ahash::RandomState>;
 
-pub struct ConnectionBridge {
+type AsyncWebSocket<T> = Mutex<WebSocketStream<T>>;
+pub struct ConnectionBridge<T: Send + 'static> {
     connection: Connection,
+    websocket: AsyncWebSocket<T>,
 //    recv_streams: IrohRecvStreamMap,
     send_streams: IrohSendStreamMap
 }
@@ -252,9 +258,10 @@ pub enum ConnectionBridgeSendStreamOrId {
     StreamExternalId(String)
 }
 
-impl ConnectionBridge {
-    pub fn new(conn: Connection) -> Self {
+impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {
+    pub fn new(conn: Connection, wsc: AsyncWebSocket<T>) -> Self {
         Self { connection: conn,
+            websocket: wsc,
             send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()) }
     }
 
@@ -292,8 +299,8 @@ impl ConnectionBridge {
                         if stream_id != packet.id {
                             error!("Packet id inequal to stream id: {} != {}", stream_id, packet.id);
                         }
-                        /* TODO: Froward data to WebSocket */
                     }
+                    self.websocket.lock().await.send(Message::text(packet.payload)).await;
                 }
             };
         }

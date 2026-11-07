@@ -1774,6 +1774,7 @@ dependencies = [
  "ahash",
  "bytes",
  "dashmap",
+ "futures-util",
  "hashbrown 0.17.1",
  "iroh",
  "iroh-tickets",
@@ -1781,6 +1782,7 @@ dependencies = [
  "sonic-rs",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-websockets",
 ]
 
 [[package]]
