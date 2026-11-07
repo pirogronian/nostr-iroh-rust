@@ -8,13 +8,14 @@ use std::convert::TryInto;
 use std::array::TryFromSliceError;
 use std::str::Utf8Error;
 use std::num::TryFromIntError;
-use iroh::{EndpointAddr, endpoint::{Connection, Endpoint, ReadError, RecvStream, SendStream, WriteError, presets}};
+use iroh::{EndpointAddr, endpoint::{Connection, ConnectionError, Endpoint, ReadError, RecvStream, SendStream, WriteError, presets}};
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use log::{error, warn, info, debug};
 use tokio;
 use sonic_rs::{JsonPointer, PointerNode, JsonValueTrait};
 use ahash::RandomState;
 use std::fmt::{Formatter};
+use std::sync::Arc;
 
 use crate::GetIrohPacketError::UnexpectedEOS;
 
@@ -238,7 +239,7 @@ impl<'db, 'a> WebSocketPacketAnalyzer<'db, 'a> {
 }
 
 //type IrohRecvStreamMap = dashmap::DashMap<String, RecvStream, ahash::RandomState>;
-type IrohSendStreamMap = dashmap::DashMap<String, IrohSendStream, ahash::RandomState>;
+type IrohSendStreamMap = dashmap::DashMap<String, Arc<IrohSendStream>, ahash::RandomState>;
 
 pub struct ConnectionBridge {
     connection: Connection,
@@ -247,7 +248,7 @@ pub struct ConnectionBridge {
 }
 
 pub enum ConnectionBridgeSendStreamOrId {
-    SendStream(IrohSendStream),
+    SendStream(Arc<IrohSendStream>),
     StreamExternalId(String)
 }
 
@@ -266,7 +267,7 @@ impl ConnectionBridge {
         let mut res: Result<(), GetIrohPacketError> = Ok(());
         let mut stream_id = "".to_string();
         let mut external_id: Option<String> = None;
-        let mut iroh_send_stream: Option<IrohSendStream> = None;
+        let mut iroh_send_stream: Option<Arc<IrohSendStream>> = None;
         match ss_or_id {
             ConnectionBridgeSendStreamOrId::StreamExternalId(s) => { stream_id = s; },
             ConnectionBridgeSendStreamOrId::SendStream(ss) => { iroh_send_stream = Some(ss); }
@@ -296,6 +297,18 @@ impl ConnectionBridge {
                 }
             };
         }
-        Ok(())
+        res
+    }
+
+    pub async fn open_stream(self: Arc<Self>, id: String) -> Result<Arc<IrohSendStream>, ConnectionError> {
+        let (send, recv) = self.connection.open_bi().await?;
+        let iss = Arc::new(IrohSendStream::new(send));
+        self.send_streams.insert(id.clone(), iss.clone());
+        let self_clone = Arc::clone(&self);
+        let arg = ConnectionBridgeSendStreamOrId::StreamExternalId(id);
+        tokio::spawn(async move {
+            self_clone.handle_recv_stream(recv, arg).await;
+        });
+        Ok(iss)
     }
 }
