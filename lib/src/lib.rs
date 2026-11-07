@@ -199,36 +199,36 @@ pub struct PacketSessionInfo<'a> {
     closing: bool
 }
 
-struct WebSocketPacketInfo<'a> {
-    id_path: &'a sonic_rs::JsonPointer,
+struct WebSocketPacketInfo {
+    id_path: Box<sonic_rs::JsonPointer>,
     closing: bool
 }
-pub struct WebSocketPacketsDatabase<'a> {
-    map: hashbrown::HashMap<String, WebSocketPacketInfo<'a>, RandomState>
+pub struct WebSocketPacketsDatabase {
+    map: hashbrown::HashMap<String, WebSocketPacketInfo, RandomState>
 }
 
-impl<'a> WebSocketPacketsDatabase<'a> {
+impl WebSocketPacketsDatabase {
     pub fn new() -> Self {
         Self {
             map: hashbrown::HashMap::with_hasher(RandomState::default())
         }
     }
 
-    pub fn add(&mut self, cmd: &str, ptr: &'a JsonPointer, closing: bool) {
-        self.map.insert(format!("\"{}\"", cmd), WebSocketPacketInfo { id_path: ptr, closing: closing });
+    pub fn add(&mut self, cmd: &str, ptr: &JsonPointer, closing: bool) {
+        self.map.insert(format!("\"{}\"", cmd), WebSocketPacketInfo { id_path: ptr.to_vec().into_boxed_slice(), closing: closing });
     }
 
-    pub fn get(&self, cmd: &str) -> Option<&WebSocketPacketInfo<'_>> {
+    pub fn get(&self, cmd: &str) -> Option<&WebSocketPacketInfo> {
         self.map.get(cmd)
     }
 }
 
-pub struct WebSocketPacketAnalyzer<'db, 'a> {
-    db: &'db WebSocketPacketsDatabase<'a>
+pub struct WebSocketPacketAnalyzer {
+    db: Arc<WebSocketPacketsDatabase>
 }
 
-impl<'db, 'a> WebSocketPacketAnalyzer<'db, 'a> {
-    pub fn new(db: &'db WebSocketPacketsDatabase<'a>) -> Self {
+impl WebSocketPacketAnalyzer {
+    pub fn new(db: Arc<WebSocketPacketsDatabase>) -> Self {
         Self { db: db }
     }
 
@@ -237,7 +237,7 @@ impl<'db, 'a> WebSocketPacketAnalyzer<'db, 'a> {
         let cmd = ret_cmd.as_raw_str();
         let Some(info) = self.db.get(cmd)
         else { return Ok(None) };
-        let id = sonic_rs::get(data, info.id_path)?;
+        let id = sonic_rs::get(data, &info.id_path)?;
         Ok(Some(PacketSessionInfo { id, closing: info.closing }))
     }
 }
