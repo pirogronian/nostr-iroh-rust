@@ -318,4 +318,21 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         });
         Ok(iss)
     }
+
+    pub async fn handle_websocket(self: Arc<Self>) {
+        loop {
+            let data_o = self.websocket.lock().await.next().await;
+            match data_o {
+                None => { break },
+                Some(res) => {
+                    match res {
+                        Err(_) => { break },
+                        Ok(msg) => {
+                            /* TODO: packet analyzis & sending to proper stream */
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
