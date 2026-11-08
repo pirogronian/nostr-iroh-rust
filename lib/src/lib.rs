@@ -43,8 +43,8 @@ impl IrohPacket {
     fn is_persistent(&self) -> bool {
         IrohPacket::EPHEMERAL & self.flags == 0
     }
-    fn new(flags: u32, id: String, payload: String) -> IrohPacket {
-        return IrohPacket { flags: flags, id: id, payload: payload }
+    fn new(flags: u32, id: &str, payload: String) -> IrohPacket {
+        return IrohPacket { flags: flags, id: id.to_string(), payload: payload }
     }
     fn dump(&self) {
         println!("Packet from client:");
@@ -88,7 +88,7 @@ impl IrohRecvStream {
     }
 
     async fn read_packet(&mut self) -> Result<Option<IrohPacket>, GetIrohPacketError> {
-        let mut packet: IrohPacket = IrohPacket::new(0, "".to_string(), "".to_string());
+        let mut packet: IrohPacket = IrohPacket::new(0, "", "".to_string());
         let mut buf: BytesMut = BytesMut::new();
         let mut id_len;
         let mut payl_len;
@@ -196,12 +196,16 @@ impl IrohSendStream {
 
 pub struct PacketSessionInfo<'a> {
     id: sonic_rs::LazyValue<'a>,
-    closing: bool
+    closing: bool,
+    closing_bith: bool,
+    flags: u32
 }
 
 struct WebSocketPacketInfo {
     id_path: Box<sonic_rs::JsonPointer>,
-    closing: bool
+    closing: bool,
+    closing_both: bool,
+    flags: u32
 }
 pub struct WebSocketPacketsDatabase {
     map: hashbrown::HashMap<String, WebSocketPacketInfo, RandomState>
@@ -214,8 +218,15 @@ impl WebSocketPacketsDatabase {
         }
     }
 
-    pub fn add(&mut self, cmd: &str, ptr: &JsonPointer, closing: bool) {
-        self.map.insert(format!("\"{}\"", cmd), WebSocketPacketInfo { id_path: ptr.to_vec().into_boxed_slice(), closing: closing });
+    pub fn add(&mut self,
+        cmd: &str, ptr: &JsonPointer, closing: bool,
+        closing_both: bool, flags: u32)
+    {
+        self.map.insert(format!("\"{}\"", cmd), WebSocketPacketInfo
+        {
+            id_path: ptr.to_vec().into_boxed_slice(),
+            closing: closing, closing_both: closing_both, flags: flags
+        });
     }
 
     pub fn get(&self, cmd: &str) -> Option<&WebSocketPacketInfo> {
@@ -238,7 +249,10 @@ impl WebSocketPacketAnalyzer {
         let Some(info) = self.db.get(cmd)
         else { return Ok(None) };
         let id = sonic_rs::get(data, &info.id_path)?;
-        Ok(Some(PacketSessionInfo { id, closing: info.closing }))
+        Ok(Some(PacketSessionInfo {
+            id, closing: info.closing,
+            closing_bith: info.closing_both,
+            flags: info.flags}))
     }
 }
 
@@ -321,6 +335,20 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         Ok(iss)
     }
 
+    pub async fn close_stream(self: Arc<Self>, id: &str) {
+        let mut iss_o: Option<Arc<IrohSendStream>> = None;
+        {
+            let ret = self.send_streams.get(id);
+            if let Some(refe) = ret {
+                iss_o = Some((*refe.value()).clone());
+            }
+        }
+        if let Some(iss) = iss_o {
+            iss.finish().await;
+            self.send_streams.remove(id);
+        }
+    }
+
     pub async fn handle_websocket(self: Arc<Self>) {
         let s2 = self.clone();
         let ws = &self.websocket;
@@ -341,9 +369,13 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                                         Err(_) => { break },
                                         Ok(o_info) => {
                                             let mut id: String = String::new();
+                                            let mut flags: u32 = 0;
+                                            let mut closing = false;
                                             let mut send_o: Option<Arc<IrohSendStream>> = None;
                                             if let Some(info) = o_info {
                                                 id = info.id.to_string();
+                                                flags = info.flags;
+                                                closing = info.closing;
                                             }
                                             {
                                                 let ret = sss.get(&id);
@@ -363,8 +395,16 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                                             }
                                             if !send_o.is_none() {
                                                 let mut iss = send_o.unwrap();
-                                                let packet = IrohPacket::new(0, id, data.to_string()); // TODO: add flags set
-                                                iss.send_packet(&packet);
+                                                let packet = IrohPacket::new(flags, &id, data.to_string()); // TODO: add flags set
+                                                let send_ret = iss.send_packet(&packet).await;
+                                                if let Err(e) = send_ret {
+                                                    error!("Error while sending packet to Iroh stream: {}", e);
+                                                    closing = true;
+                                                }
+                                                if closing {
+                                                    iss.finish().await;
+                                                    sss.remove(&id);
+                                                }
                                             }
                                         }
                                     }
