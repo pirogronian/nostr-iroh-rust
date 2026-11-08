@@ -170,17 +170,17 @@ impl IrohRecvStream {
 }
 
 pub struct IrohSendStream {
-    stream: SendStream
+    stream: tokio::sync::Mutex<SendStream>
 }
 
 impl IrohSendStream {
     pub fn new(stream: SendStream) -> IrohSendStream {
-        return IrohSendStream { stream: stream }
+        return IrohSendStream { stream: tokio::sync::Mutex::new(stream) }
     }
 
-    pub fn finish(&mut self) { self.stream.finish(); }
+    pub async fn finish(&self) { self.stream.lock().await.finish(); }
 
-    pub async fn send_packet(&mut self, packet: &IrohPacket) -> Result<(), SendIrohPacketError> {
+    pub async fn send_packet(&self, packet: &IrohPacket) -> Result<(), SendIrohPacketError> {
         let mut buf: BytesMut = BytesMut::new();
         buf.put_u32(packet.flags);
         let id_len: u32 = packet.id.len().try_into()?;
@@ -189,7 +189,7 @@ impl IrohSendStream {
         buf.put_u32(payl_len);
         buf.extend_from_slice(packet.id.as_bytes());
         buf.extend_from_slice(packet.payload.as_bytes());
-        self.stream.write_chunk(buf.freeze()).await?;
+        self.stream.lock().await.write_chunk(buf.freeze()).await?;
         Ok(())
     }
 }
@@ -250,7 +250,8 @@ pub struct ConnectionBridge<T: Send + 'static> {
     connection: Connection,
     websocket: AsyncWebSocket<T>,
 //    recv_streams: IrohRecvStreamMap,
-    send_streams: IrohSendStreamMap
+    send_streams: IrohSendStreamMap,
+    analyzer: Arc<WebSocketPacketAnalyzer>
 }
 
 pub enum ConnectionBridgeSendStreamOrId {
@@ -259,10 +260,11 @@ pub enum ConnectionBridgeSendStreamOrId {
 }
 
 impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {
-    pub fn new(conn: Connection, wsc: AsyncWebSocket<T>) -> Self {
+    pub fn new(conn: Connection, wsc: AsyncWebSocket<T>, analyzer: Arc<WebSocketPacketAnalyzer>) -> Self {
         Self { connection: conn,
             websocket: wsc,
-            send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()) }
+            send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
+            analyzer: analyzer }
     }
 
     pub async fn handle_recv_stream(
@@ -307,12 +309,12 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         res
     }
 
-    pub async fn open_stream(self: Arc<Self>, id: String) -> Result<Arc<IrohSendStream>, ConnectionError> {
+    pub async fn open_stream(self: Arc<Self>, id: &str) -> Result<Arc<IrohSendStream>, ConnectionError> {
         let (send, recv) = self.connection.open_bi().await?;
         let iss = Arc::new(IrohSendStream::new(send));
-        self.send_streams.insert(id.clone(), iss.clone());
+        self.send_streams.insert(id.to_string(), iss.clone());
         let self_clone = Arc::clone(&self);
-        let arg = ConnectionBridgeSendStreamOrId::StreamExternalId(id);
+        let arg = ConnectionBridgeSendStreamOrId::StreamExternalId(id.to_string());
         tokio::spawn(async move {
             self_clone.handle_recv_stream(recv, arg).await;
         });
@@ -320,15 +322,54 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
     }
 
     pub async fn handle_websocket(self: Arc<Self>) {
+        let s2 = self.clone();
+        let ws = &self.websocket;
+        let analyzer = &self.analyzer;
+        let sss = &self.send_streams;
         loop {
-            let data_o = self.websocket.lock().await.next().await;
+            let data_o = ws.lock().await.next().await;
             match data_o {
                 None => { break },
                 Some(res) => {
                     match res {
                         Err(_) => { break },
                         Ok(msg) => {
-                            /* TODO: packet analyzis & sending to proper stream */
+                            if msg.is_binary() || msg.is_text() {
+                                if let Some(data) = msg.as_text() {
+                                    let res_info = analyzer.get_info(data);
+                                    match res_info {
+                                        Err(_) => { break },
+                                        Ok(o_info) => {
+                                            let mut id: String = String::new();
+                                            let mut send_o: Option<Arc<IrohSendStream>> = None;
+                                            if let Some(info) = o_info {
+                                                id = info.id.to_string();
+                                            }
+                                            {
+                                                let ret = sss.get(&id);
+                                                if let Some(r) = ret {
+                                                    send_o = Some(r.value().clone());
+                                                }
+                                            }
+                                            if send_o.is_none() {
+                                                let iss_res = s2.clone().open_stream(&id).await;
+                                                if let Err(e) = iss_res {
+                                                    error!("Error while opening new Iroh stream: {}", e);
+                                                    break
+                                                }
+                                                let iss = iss_res.unwrap();
+                                                self.send_streams.insert(id.clone(), iss.clone());
+                                                send_o = Some(iss);
+                                            }
+                                            if !send_o.is_none() {
+                                                let mut iss = send_o.unwrap();
+                                                let packet = IrohPacket::new(0, id, data.to_string()); // TODO: add flags set
+                                                iss.send_packet(&packet);
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if msg.is_close() { break }
                         }
                     }
                 }
