@@ -75,7 +75,7 @@ pub async fn test_client_iroh_packet_sender(addr: EndpointAddr) {
     }
     let stream = ret_stream.unwrap();
     let mut sstream = IrohSendStream::new(stream);
-    let packet = IrohPacket::new(13, "id123".to_string(), "Kubuś Puchatek".to_string());
+    let packet = IrohPacket::new(13, "id123", "Kubuś Puchatek".to_string());
     let ret_send = sstream.send_packet(&packet).await;
     if let Err(e) = ret_send { error!("Error while sending test packet to relay: {}", e); }
     sstream.finish();
