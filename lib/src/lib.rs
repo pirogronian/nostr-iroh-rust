@@ -385,7 +385,7 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                 None => { break },
                 Some(res) => {
                     match res {
-                        Err(_) => { break },
+                        Err(e) => { error!("Error while reading packet from WebSocket: {}", e); break },
                         Ok(msg) => {
                             if msg.is_binary() || msg.is_text() {
                                 if let Some(data) = msg.as_text() {
