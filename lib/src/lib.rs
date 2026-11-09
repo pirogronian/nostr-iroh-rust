@@ -391,7 +391,7 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                                 if let Some(data) = msg.as_text() {
                                     let res_info = analyzer.get_info(data);
                                     match res_info {
-                                        Err(_) => { break },
+                                        Err(e) => { error!("Error while analyzing packet from WebSocket: {}", e); break },
                                         Ok(o_info) => {
                                             let mut id: String = String::new();
                                             let mut flags: u32 = 0;
