@@ -7,6 +7,7 @@ use thiserror::Error;
 use std::convert::TryInto;
 use std::array::TryFromSliceError;
 use std::str::Utf8Error;
+use std::string::FromUtf8Error;
 use std::num::TryFromIntError;
 use iroh::{EndpointAddr, endpoint::{Connection, ConnectionError, Endpoint, ReadError, RecvStream, SendStream, WriteError, presets}};
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
@@ -28,6 +29,24 @@ pub mod test;
 pub const ALPN: &[u8] = b"nostr-iroh-proxy/0";
 
 pub static ALPNs: LazyLock<Vec<Vec<u8>>> = LazyLock::new(|| { vec![(ALPN.to_vec())] });
+
+pub trait BytesExt {
+    fn into_utf8_string(self) -> Result<String, std::string::FromUtf8Error>;
+}
+
+impl BytesExt for Bytes {
+    fn into_utf8_string(self) -> Result<String, std::string::FromUtf8Error> {
+        let v: Vec<u8> = self.into();
+        String::from_utf8(v)
+    }
+}
+
+impl BytesExt for BytesMut {
+    fn into_utf8_string(self) -> Result<String, std::string::FromUtf8Error> {
+        let v: Vec<u8> = self.into();
+        String::from_utf8(v)
+    }
+}
 
 #[derive(Debug)]
 pub enum PacketPayload<'a> {
@@ -87,6 +106,8 @@ pub enum GetIrohPacketError {
     U32ConvertError(#[from] TryFromSliceError),
     #[error("Error while converting bytes into UTF-8: {0}")]
     Utf8Error(#[from] Utf8Error),
+    #[error("Error while converting bytes into UTF-8: {0}")]
+    FromUtf8Error(#[from] FromUtf8Error),
     #[error("Unexpected EOS")]
     UnexpectedEOS
 }
@@ -113,7 +134,6 @@ impl IrohRecvStream {
 
     async fn read_packet<'a>(&mut self) -> Result<Option<IrohPacket<'a>>, GetIrohPacketError> {
         let mut packet: IrohPacket = IrohPacket::new_received(0, "", "");
-        let mut buf: BytesMut = BytesMut::new();
         let mut id_len;
         let mut payl_len;
         if self.current_chunk.len() == 0 {
@@ -127,6 +147,7 @@ impl IrohRecvStream {
             payl_len = u32::from_be_bytes(self.current_chunk[8..12].try_into()?) as usize;
             self.current_chunk.split_to(12);
         } else {
+            let mut buf: BytesMut = BytesMut::new();
             buf.extend_from_slice(&self.current_chunk);
             loop {
                 let op = self.stream.read_chunk(Self::MAX_CHUNK_SIZE).await?;
@@ -147,9 +168,9 @@ impl IrohRecvStream {
 
         if self.current_chunk.len() >= id_len {
             let rest = self.current_chunk.split_to(id_len);
-            packet.id = std::str::from_utf8(&rest)?.to_string();
+            packet.id = rest.into_utf8_string()?;
         } else {
-            buf.clear();
+            let mut buf: BytesMut = BytesMut::new();
             if self.current_chunk.len() > 0 { buf.extend_from_slice(&self.current_chunk); }
             loop {
                 let op = self.stream.read_chunk(Self::MAX_CHUNK_SIZE).await?;
@@ -159,9 +180,9 @@ impl IrohRecvStream {
                     let rest = self.current_chunk.split_to(id_len - buf.len());
                     if buf.len() > 0 {
                         buf.extend_from_slice(&rest);
-                        packet.id = std::str::from_utf8(&buf)?.to_string();
+                        packet.id = buf.into_utf8_string()?;
                     } else {
-                        packet.id = std::str::from_utf8(&rest)?.to_string();
+                        packet.id = rest.into_utf8_string()?;
                     }
                     break;
                 } else { buf.extend_from_slice(&self.current_chunk); }
@@ -169,9 +190,9 @@ impl IrohRecvStream {
         }
         if self.current_chunk.len() >= payl_len {
             let rest = self.current_chunk.split_to(payl_len);
-            packet.payload = PacketPayload::Owned(std::str::from_utf8(&rest)?.to_string());
+            packet.payload = PacketPayload::Owned(rest.into_utf8_string()?);
         } else {
-            buf.clear();
+            let mut buf = BytesMut::new();
             if self.current_chunk.len() > 0 { buf.extend_from_slice(&self.current_chunk); }
             loop {
                 let op = self.stream.read_chunk(Self::MAX_CHUNK_SIZE).await?;
@@ -181,9 +202,9 @@ impl IrohRecvStream {
                     let rest = self.current_chunk.split_to(payl_len - buf.len());
                     if buf.len() > 0 {
                         buf.extend_from_slice(&rest);
-                        packet.payload = PacketPayload::Owned(std::str::from_utf8(&buf)?.to_string());
+                        packet.payload = PacketPayload::Owned(buf.into_utf8_string()?);
                     } else {
-                        packet.payload = PacketPayload::Owned(std::str::from_utf8(&rest)?.to_string());
+                        packet.payload = PacketPayload::Owned(rest.into_utf8_string()?);
                     }
                     break;
                 } else { buf.extend_from_slice(&self.current_chunk); }
