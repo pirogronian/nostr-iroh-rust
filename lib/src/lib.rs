@@ -296,6 +296,29 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         return &self.persistent_send_streams
     }
 
+
+    pub async fn get_or_open_send_stream(self: &Arc<Self>, id: &str,
+        flags: u32) -> Result<Arc<IrohSendStream>, ConnectionError> {
+        let ssmap = self.get_send_streams_container(flags);
+        if let Some(r) = ssmap.get(id) {
+            return Ok(r.value().clone())
+        }
+
+        self.clone().open_stream(id, flags).await
+    }
+
+    pub async fn remove_send_stream(self: &Arc<Self>, id: &str, flags: u32, finish: bool) {
+        let ssmap = self.get_send_streams_container(flags);
+        if finish {
+            let ret = ssmap.get(id);
+            if let Some(r) = ret {
+                let iss = r.value();
+                iss.finish().await;
+            }
+        }
+        ssmap.remove(id);
+    }
+
     pub async fn handle_recv_stream(
         &self,
         stream: RecvStream,
@@ -352,21 +375,6 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         Ok(iss)
     }
 
-    pub async fn close_stream(self: Arc<Self>, id: &str, flags: u32) {
-        let mut iss_o: Option<Arc<IrohSendStream>> = None;
-        let ssmap = self.get_send_streams_container(flags);
-        {
-            let ret = ssmap.get(id);
-            if let Some(refe) = ret {
-                iss_o = Some((*refe.value()).clone());
-            }
-        }
-        if let Some(iss) = iss_o {
-            iss.finish().await;
-            ssmap.remove(id);
-        }
-    }
-
     pub async fn handle_websocket(self: Arc<Self>) {
         let s2 = self.clone();
         let ws = &self.websocket;
@@ -388,30 +396,13 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                                             let mut id: String = String::new();
                                             let mut flags: u32 = 0;
                                             let mut closing = false;
-                                            let mut send_o: Option<Arc<IrohSendStream>> = None;
                                             if let Some(info) = o_info {
                                                 id = info.id.to_string();
                                                 flags = info.flags;
                                                 closing = info.closing;
                                             }
-                                            let ssmap = self.get_send_streams_container(flags);
-                                            {
-                                                let ret = ssmap.get(&id);
-                                                if let Some(r) = ret {
-                                                    send_o = Some(r.value().clone());
-                                                }
-                                            }
-                                            if send_o.is_none() {
-                                                let iss_res = s2.clone().open_stream(&id, flags).await;
-                                                if let Err(e) = iss_res {
-                                                    error!("Error while opening new Iroh stream: {}", e);
-                                                    break
-                                                }
-                                                let iss = iss_res.unwrap();
-                                                send_o = Some(iss);
-                                            }
-                                            if !send_o.is_none() {
-                                                let mut iss = send_o.unwrap();
+                                            let iss_ret = self.get_or_open_send_stream(&id, flags).await;
+                                            if let Ok(iss) = iss_ret {
                                                 let packet = IrohPacket::new(flags, &id, data.to_string());
                                                 let send_ret = iss.send_packet(&packet).await;
                                                 if let Err(e) = send_ret {
@@ -419,8 +410,7 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                                                     closing = true;
                                                 }
                                                 if closing {
-                                                    iss.finish().await;
-                                                    ssmap.remove(&id);
+                                                    self.remove_send_stream(&id, flags, true).await;
                                                 }
                                             }
                                         }
