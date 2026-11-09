@@ -264,7 +264,8 @@ pub struct ConnectionBridge<T: Send + 'static> {
     connection: Connection,
     websocket: AsyncWebSocket<T>,
 //    recv_streams: IrohRecvStreamMap,
-    send_streams: IrohSendStreamMap,
+    ephemeral_send_streams: IrohSendStreamMap,
+    persistent_send_streams: IrohSendStreamMap,
     analyzer: Arc<WebSocketPacketAnalyzer>
 }
 
@@ -277,8 +278,22 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
     pub fn new(conn: Connection, wsc: AsyncWebSocket<T>, analyzer: Arc<WebSocketPacketAnalyzer>) -> Self {
         Self { connection: conn,
             websocket: wsc,
-            send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
+            ephemeral_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
+            persistent_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
             analyzer: analyzer }
+    }
+
+    pub fn is_ephemeral(&self, flags: u32) -> bool {
+        return flags & IrohPacket::EPHEMERAL > 0;
+    }
+
+    pub fn is_persistent(&self, flags: u32) -> bool {
+        return flags & IrohPacket::EPHEMERAL == 0;
+    }
+
+    pub fn get_send_streams_container(&self, flags: u32) -> &IrohSendStreamMap {
+        if self.is_ephemeral(flags) { return &self.ephemeral_send_streams }
+        return &self.persistent_send_streams
     }
 
     pub async fn handle_recv_stream(
@@ -307,10 +322,11 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                 Some(packet) => {
                     if first_packet && let Some(s) = iroh_send_stream.take() {
                         stream_id = packet.id; first_packet = false;
-                        if self.send_streams.contains_key(&stream_id) {
+                        let ssmap = self.get_send_streams_container(packet.flags);
+                        if ssmap.contains_key(&stream_id) {
                             error!("Another stream with id {} already registered!", stream_id);
                         }
-                        self.send_streams.insert(stream_id.clone(), s);
+                        ssmap.insert(stream_id.clone(), s);
                     } else {
                         if stream_id != packet.id {
                             error!("Packet id inequal to stream id: {} != {}", stream_id, packet.id);
@@ -323,10 +339,11 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         res
     }
 
-    pub async fn open_stream(self: Arc<Self>, id: &str) -> Result<Arc<IrohSendStream>, ConnectionError> {
+    pub async fn open_stream(self: Arc<Self>, id: &str, flags: u32) -> Result<Arc<IrohSendStream>, ConnectionError> {
         let (send, recv) = self.connection.open_bi().await?;
         let iss = Arc::new(IrohSendStream::new(send));
-        self.send_streams.insert(id.to_string(), iss.clone());
+        let ssmap = self.get_send_streams_container(flags);
+        ssmap.insert(id.to_string(), iss.clone());
         let self_clone = Arc::clone(&self);
         let arg = ConnectionBridgeSendStreamOrId::StreamExternalId(id.to_string());
         tokio::spawn(async move {
@@ -335,17 +352,18 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         Ok(iss)
     }
 
-    pub async fn close_stream(self: Arc<Self>, id: &str) {
+    pub async fn close_stream(self: Arc<Self>, id: &str, flags: u32) {
         let mut iss_o: Option<Arc<IrohSendStream>> = None;
+        let ssmap = self.get_send_streams_container(flags);
         {
-            let ret = self.send_streams.get(id);
+            let ret = ssmap.get(id);
             if let Some(refe) = ret {
                 iss_o = Some((*refe.value()).clone());
             }
         }
         if let Some(iss) = iss_o {
             iss.finish().await;
-            self.send_streams.remove(id);
+            ssmap.remove(id);
         }
     }
 
@@ -353,7 +371,6 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         let s2 = self.clone();
         let ws = &self.websocket;
         let analyzer = &self.analyzer;
-        let sss = &self.send_streams;
         loop {
             let data_o = ws.lock().await.next().await;
             match data_o {
@@ -377,25 +394,25 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                                                 flags = info.flags;
                                                 closing = info.closing;
                                             }
+                                            let ssmap = self.get_send_streams_container(flags);
                                             {
-                                                let ret = sss.get(&id);
+                                                let ret = ssmap.get(&id);
                                                 if let Some(r) = ret {
                                                     send_o = Some(r.value().clone());
                                                 }
                                             }
                                             if send_o.is_none() {
-                                                let iss_res = s2.clone().open_stream(&id).await;
+                                                let iss_res = s2.clone().open_stream(&id, flags).await;
                                                 if let Err(e) = iss_res {
                                                     error!("Error while opening new Iroh stream: {}", e);
                                                     break
                                                 }
                                                 let iss = iss_res.unwrap();
-                                                self.send_streams.insert(id.clone(), iss.clone());
                                                 send_o = Some(iss);
                                             }
                                             if !send_o.is_none() {
                                                 let mut iss = send_o.unwrap();
-                                                let packet = IrohPacket::new(flags, &id, data.to_string()); // TODO: add flags set
+                                                let packet = IrohPacket::new(flags, &id, data.to_string());
                                                 let send_ret = iss.send_packet(&packet).await;
                                                 if let Err(e) = send_ret {
                                                     error!("Error while sending packet to Iroh stream: {}", e);
@@ -403,7 +420,7 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                                                 }
                                                 if closing {
                                                     iss.finish().await;
-                                                    sss.remove(&id);
+                                                    ssmap.remove(&id);
                                                 }
                                             }
                                         }
