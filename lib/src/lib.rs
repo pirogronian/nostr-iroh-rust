@@ -14,7 +14,7 @@ use log::{error, warn, info, debug};
 use tokio;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
-use sonic_rs::{JsonPointer, PointerNode, JsonValueTrait};
+use sonic_rs::{JsonPointer, JsonValueTrait, PointerNode, parser::Reference::Borrowed};
 use ahash::RandomState;
 use std::fmt::{Formatter};
 use std::sync::Arc;
@@ -29,13 +29,34 @@ pub const ALPN: &[u8] = b"nostr-iroh-proxy/0";
 
 pub static ALPNs: LazyLock<Vec<Vec<u8>>> = LazyLock::new(|| { vec![(ALPN.to_vec())] });
 
-pub struct IrohPacket {
-    pub flags: u32,
-    pub id: String,
-    pub payload: String
+#[derive(Debug)]
+pub enum PacketPayload<'a> {
+    Borrowed(&'a str),
+    Owned(String)
 }
 
-impl IrohPacket {
+impl<'a> PacketPayload<'a> {
+    pub fn as_str(&self) -> &str {
+        match self {
+            PacketPayload::Borrowed(s) => s,
+            PacketPayload::Owned(s) => s.as_str()
+        }
+    }
+
+    pub fn to_string(self) -> String {
+        match self {
+            PacketPayload::Borrowed(s) => s.to_string(),
+            PacketPayload::Owned(s) => s
+        }
+    }
+}
+pub struct IrohPacket<'a> {
+    pub flags: u32,
+    pub id: String,
+    pub payload: PacketPayload<'a>
+}
+
+impl<'a> IrohPacket<'a> {
     pub const EPHEMERAL: u32 = 1;
     fn is_ephemeral(&self) -> bool {
         IrohPacket::EPHEMERAL & self.flags > 0
@@ -43,14 +64,17 @@ impl IrohPacket {
     fn is_persistent(&self) -> bool {
         IrohPacket::EPHEMERAL & self.flags == 0
     }
-    fn new(flags: u32, id: &str, payload: String) -> IrohPacket {
-        return IrohPacket { flags: flags, id: id.to_string(), payload: payload }
+    fn new_sent(flags: u32, id: &str, payload: &'a str) -> IrohPacket<'a> {
+        return IrohPacket { flags: flags, id: id.to_string(), payload: PacketPayload::Borrowed(payload) }
+    }
+    fn new_received(flags: u32, id: &str, payload: &str) -> IrohPacket<'a> {
+        return IrohPacket { flags: flags, id: id.to_string(), payload: PacketPayload::Owned(payload.to_string()) }
     }
     fn dump(&self) {
         println!("Packet from client:");
         println!("Flags: {}", self.flags);
         println!("Id: ({}) \"{}\"", self.id.len(), self.id);
-        println!("Payload: ({}) \"{}\"", self.payload.len(), self.payload);
+        println!("Payload: ({}) \"{}\"", self.payload.as_str().len(), self.payload.as_str());
         println!("-------------------------");
     }
 }
@@ -87,8 +111,8 @@ impl IrohRecvStream {
         return IrohRecvStream { stream: stream, current_chunk: Bytes::new() }
     }
 
-    async fn read_packet(&mut self) -> Result<Option<IrohPacket>, GetIrohPacketError> {
-        let mut packet: IrohPacket = IrohPacket::new(0, "", "".to_string());
+    async fn read_packet<'a>(&mut self) -> Result<Option<IrohPacket<'a>>, GetIrohPacketError> {
+        let mut packet: IrohPacket = IrohPacket::new_received(0, "", "");
         let mut buf: BytesMut = BytesMut::new();
         let mut id_len;
         let mut payl_len;
@@ -145,7 +169,7 @@ impl IrohRecvStream {
         }
         if self.current_chunk.len() >= payl_len {
             let rest = self.current_chunk.split_to(payl_len);
-            packet.payload = std::str::from_utf8(&rest)?.to_string();
+            packet.payload = PacketPayload::Owned(std::str::from_utf8(&rest)?.to_string());
         } else {
             buf.clear();
             if self.current_chunk.len() > 0 { buf.extend_from_slice(&self.current_chunk); }
@@ -157,9 +181,9 @@ impl IrohRecvStream {
                     let rest = self.current_chunk.split_to(payl_len - buf.len());
                     if buf.len() > 0 {
                         buf.extend_from_slice(&rest);
-                        packet.payload = std::str::from_utf8(&buf)?.to_string();
+                        packet.payload = PacketPayload::Owned(std::str::from_utf8(&buf)?.to_string());
                     } else {
-                        packet.payload = std::str::from_utf8(&rest)?.to_string();
+                        packet.payload = PacketPayload::Owned(std::str::from_utf8(&rest)?.to_string());
                     }
                     break;
                 } else { buf.extend_from_slice(&self.current_chunk); }
@@ -180,15 +204,16 @@ impl IrohSendStream {
 
     pub async fn finish(&self) { self.stream.lock().await.finish(); }
 
-    pub async fn send_packet(&self, packet: &IrohPacket) -> Result<(), SendIrohPacketError> {
+    pub async fn send_packet(&self, packet: &IrohPacket<'_>) -> Result<(), SendIrohPacketError> {
         let mut buf: BytesMut = BytesMut::new();
         buf.put_u32(packet.flags);
         let id_len: u32 = packet.id.len().try_into()?;
         buf.put_u32(id_len);
-        let payl_len: u32 = packet.payload.len().try_into()?;
+        let payload = packet.payload.as_str();
+        let payl_len: u32 = payload.len().try_into()?;
         buf.put_u32(payl_len);
         buf.extend_from_slice(packet.id.as_bytes());
-        buf.extend_from_slice(packet.payload.as_bytes());
+        buf.extend_from_slice(payload.as_bytes());
         self.stream.lock().await.write_chunk(buf.freeze()).await?;
         Ok(())
     }
@@ -355,7 +380,7 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                             error!("Packet id inequal to stream id: {} != {}", stream_id, packet.id);
                         }
                     }
-                    self.websocket.lock().await.send(Message::text(packet.payload)).await;
+                    self.websocket.lock().await.send(Message::text(packet.payload.to_string())).await;
                 }
             };
         }
@@ -403,7 +428,7 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                                             }
                                             let iss_ret = self.get_or_open_send_stream(&id, flags).await;
                                             if let Ok(iss) = iss_ret {
-                                                let packet = IrohPacket::new(flags, &id, data.to_string());
+                                                let packet = IrohPacket::new_sent(flags, &id, data);
                                                 let send_ret = iss.send_packet(&packet).await;
                                                 if let Err(e) = send_ret {
                                                     error!("Error while sending packet to Iroh stream: {}", e);
