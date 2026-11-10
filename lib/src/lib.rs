@@ -448,7 +448,6 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
     }
 
     pub async fn handle_websocket(self: Arc<Self>) {
-        let s2 = self.clone();
         let ws = &self.websocket;
         let analyzer = &self.analyzer;
         let ctoken = self.token.child_token();
@@ -469,7 +468,7 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                             error!("Error while reading packet from WebSocket: {}", e);
                             self.shutdown(); break },
                         Ok(msg) => {
-                            if msg.is_binary() || msg.is_text() {
+                            if msg.is_text() {
                                 if let Some(data) = msg.as_text() {
                                     let res_info = analyzer.get_info(data);
                                     match res_info {
