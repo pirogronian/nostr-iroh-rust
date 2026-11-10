@@ -1782,6 +1782,7 @@ dependencies = [
  "sonic-rs",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tokio-websockets",
 ]
 

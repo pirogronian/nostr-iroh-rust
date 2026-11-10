@@ -16,3 +16,4 @@ ahash = { workspace = true }
 dashmap = { workspace = true }
 tokio-websockets = { workspace = true }
 futures-util = { workspace = true }
+tokio-util = { workspace = true }

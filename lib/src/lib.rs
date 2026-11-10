@@ -15,6 +15,7 @@ use log::{error, warn, info, debug};
 use tokio;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use sonic_rs::{JsonPointer, JsonValueTrait, PointerNode, parser::Reference::Borrowed};
 use ahash::RandomState;
 use std::fmt::{Formatter};
@@ -316,7 +317,8 @@ pub struct ConnectionBridge<T: Send + 'static> {
 //    recv_streams: IrohRecvStreamMap,
     ephemeral_send_streams: IrohSendStreamMap,
     persistent_send_streams: IrohSendStreamMap,
-    analyzer: Arc<WebSocketPacketAnalyzer>
+    analyzer: Arc<WebSocketPacketAnalyzer>,
+    token: CancellationToken
 }
 
 pub enum ConnectionBridgeSendStreamOrId {
@@ -330,7 +332,11 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
             websocket: wsc,
             ephemeral_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
             persistent_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
-            analyzer: analyzer }
+            analyzer: analyzer, token: CancellationToken::new() }
+    }
+
+    pub fn shutdown(&self) {
+        self.token.cancel();
     }
 
     pub fn is_ephemeral(&self, flags: u32) -> bool {
@@ -374,6 +380,7 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         stream: RecvStream,
         ss_or_id: ConnectionBridgeSendStreamOrId) -> Result<(), GetIrohPacketError>
     {
+        let ctoken = self.token.child_token();
         let mut irs: IrohRecvStream = IrohRecvStream::new(stream);
         let mut res: Result<(), GetIrohPacketError> = Ok(());
         let mut stream_id = "".to_string();
@@ -384,11 +391,20 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         };
         let mut first_packet = true;
         loop {
-            let packet_result = irs.read_packet().await;
-            let packet_op: Option<IrohPacket> = match packet_result {
-                Ok(packet) => packet,
-                Err(e) => { error!("Read packet error: {}", e); res = Err(e); break; }
+            let packet_op: Option<IrohPacket> = tokio::select! {
+                _ = ctoken.cancelled() => { None }
+                packet_result = irs.read_packet() => {
+                    match packet_result {
+                        Ok(packet) => packet,
+                        Err(e) => {
+                            error!("Read packet error: {}", e);
+                            res = Err(e);
+                            self.shutdown();
+                            None }
+                    }
+                }
             };
+            if ctoken.is_cancelled() { break }
             match packet_op {
                 None => { debug!("Stream closed."); break },
                 Some(packet) => {
@@ -409,6 +425,7 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                         error!("Error while sending message to WebSocket: {}", e);
                         irs.stop(1);
                         self.remove_send_stream(&stream_id, packet.flags, true).await;
+                        self.shutdown();
                         break;
                     }
                 }
@@ -434,19 +451,29 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         let s2 = self.clone();
         let ws = &self.websocket;
         let analyzer = &self.analyzer;
+        let ctoken = self.token.child_token();
         loop {
-            let data_o = ws.lock().await.next().await;
+            let data_o = tokio::select!{
+                _ = ctoken.cancelled() => { None }
+                o = async {
+                    let mut guard = ws.lock().await;
+                    guard.next().await
+                } => { o }
+            };
+            if ctoken.is_cancelled() { break }
             match data_o {
                 None => { break },
                 Some(res) => {
                     match res {
-                        Err(e) => { error!("Error while reading packet from WebSocket: {}", e); break },
+                        Err(e) => {
+                            error!("Error while reading packet from WebSocket: {}", e);
+                            self.shutdown(); break },
                         Ok(msg) => {
                             if msg.is_binary() || msg.is_text() {
                                 if let Some(data) = msg.as_text() {
                                     let res_info = analyzer.get_info(data);
                                     match res_info {
-                                        Err(e) => { error!("Error while analyzing packet from WebSocket: {}", e); break },
+                                        Err(e) => { error!("Error while analyzing packet from WebSocket: {}", e); },
                                         Ok(o_info) => {
                                             let mut id: String = String::new();
                                             let mut flags: u32 = 0;
@@ -462,6 +489,7 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                                                 let send_ret = iss.send_packet(&packet).await;
                                                 if let Err(e) = send_ret {
                                                     error!("Error while sending packet to Iroh stream: {}", e);
+                                                    self.shutdown();
                                                     closing = true;
                                                 }
                                                 if closing {
