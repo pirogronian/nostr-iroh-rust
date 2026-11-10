@@ -478,4 +478,20 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
             }
         }
     }
+
+    pub async fn handle_connection(self: Arc<Self>, conn: Connection) {
+        loop {
+            let ret = conn.accept_bi().await;
+            match ret {
+                Err(e) => {
+                    error!("Iroh connection error: {}", e);
+                    break;
+                },
+                Ok((send, recv)) => {
+                    let iss = Arc::new(IrohSendStream::new(send));
+                    tokio::spawn(self.clone().handle_recv_stream(recv, ConnectionBridgeSendStreamOrId::SendStream(iss)));
+                }
+            }
+        }
+    }
 }
