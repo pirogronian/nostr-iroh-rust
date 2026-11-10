@@ -373,7 +373,6 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         let mut irs: IrohRecvStream = IrohRecvStream::new(stream);
         let mut res: Result<(), GetIrohPacketError> = Ok(());
         let mut stream_id = "".to_string();
-        let mut external_id: Option<String> = None;
         let mut iroh_send_stream: Option<Arc<IrohSendStream>> = None;
         match ss_or_id {
             ConnectionBridgeSendStreamOrId::StreamExternalId(s) => { stream_id = s; },
