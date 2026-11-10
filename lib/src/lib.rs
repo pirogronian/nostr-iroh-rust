@@ -132,6 +132,10 @@ impl IrohRecvStream {
         return IrohRecvStream { stream: stream, current_chunk: Bytes::new() }
     }
 
+    pub fn stop(&mut self, code: u32) {
+        self.stream.stop(code.into());
+    }
+
     async fn read_packet<'a>(&mut self) -> Result<Option<IrohPacket<'a>>, GetIrohPacketError> {
         let mut packet: IrohPacket = IrohPacket::new_received(0, "", "");
         let mut id_len;
@@ -366,7 +370,7 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
     }
 
     pub async fn handle_recv_stream(
-        &self,
+        self: Arc<Self>,
         stream: RecvStream,
         ss_or_id: ConnectionBridgeSendStreamOrId) -> Result<(), GetIrohPacketError>
     {
@@ -400,7 +404,13 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                             error!("Packet id inequal to stream id: {} != {}", stream_id, packet.id);
                         }
                     }
-                    self.websocket.lock().await.send(Message::text(packet.payload.to_string())).await;
+                    let ret = self.websocket.lock().await.send(Message::text(packet.payload.to_string())).await;
+                    if let Err(e) = ret {
+                        error!("Error while sending message to WebSocket: {}", e);
+                        irs.stop(1);
+                        self.remove_send_stream(&stream_id, packet.flags, true).await;
+                        break;
+                    }
                 }
             };
         }
