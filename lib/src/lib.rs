@@ -307,6 +307,16 @@ impl WebSocketPacketAnalyzer {
     }
 }
 
+pub struct ProxySettings {
+    max_streams: usize
+}
+
+impl ProxySettings {
+    pub fn new_default() -> Self {
+        return Self { max_streams: 0 }
+    }
+}
+
 //type IrohRecvStreamMap = dashmap::DashMap<String, RecvStream, ahash::RandomState>;
 type IrohSendStreamMap = dashmap::DashMap<String, Arc<IrohSendStream>, ahash::RandomState>;
 
@@ -318,7 +328,8 @@ pub struct ConnectionBridge<T: Send + 'static> {
     ephemeral_send_streams: IrohSendStreamMap,
     persistent_send_streams: IrohSendStreamMap,
     analyzer: Arc<WebSocketPacketAnalyzer>,
-    token: CancellationToken
+    token: CancellationToken,
+    pub settings: Arc<ProxySettings>
 }
 
 pub enum ConnectionBridgeSendStreamOrId {
@@ -327,12 +338,13 @@ pub enum ConnectionBridgeSendStreamOrId {
 }
 
 impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {
-    pub fn new(conn: Connection, wsc: AsyncWebSocket<T>, analyzer: Arc<WebSocketPacketAnalyzer>) -> Self {
+    pub fn new(conn: Connection, wsc: AsyncWebSocket<T>, analyzer: Arc<WebSocketPacketAnalyzer>,
+        settings: Arc<ProxySettings>) -> Self {
         Self { connection: conn,
             websocket: wsc,
             ephemeral_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
             persistent_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
-            analyzer: analyzer, token: CancellationToken::new() }
+            analyzer: analyzer, token: CancellationToken::new(), settings: settings }
     }
 
     pub fn shutdown(&self) {
@@ -352,12 +364,22 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         return &self.persistent_send_streams
     }
 
+    pub fn get_streams_num(&self) -> usize {
+        return self.ephemeral_send_streams.len() + self.persistent_send_streams.len();
+    }
 
-    pub async fn get_or_open_send_stream(self: &Arc<Self>, id: &str,
+    pub async fn get_or_open_send_stream(self: &Arc<Self>, mut id: &str,
         flags: u32) -> Result<Arc<IrohSendStream>, ConnectionError> {
         let ssmap = self.get_send_streams_container(flags);
         if let Some(r) = ssmap.get(id) {
             return Ok(r.value().clone())
+        }
+        
+        if self.settings.max_streams > 0 && self.get_streams_num() >= self.settings.max_streams {
+            id = "";
+            if let Some(r) = ssmap.get(id) {
+                return Ok(r.value().clone())
+            }
         }
 
         self.clone().open_stream(id, flags).await
@@ -415,11 +437,11 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
                             error!("Another stream with id {} already registered!", stream_id);
                         }
                         ssmap.insert(stream_id.clone(), s);
-                    } else {
+                    }/* else {
                         if stream_id != packet.id {
                             error!("Packet id inequal to stream id: {} != {}", stream_id, packet.id);
                         }
-                    }
+                    }*/
                     let ret = self.websocket.lock().await.send(Message::text(packet.payload.to_string())).await;
                     if let Err(e) = ret {
                         error!("Error while sending message to WebSocket: {}", e);
@@ -507,16 +529,27 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
     }
 
     pub async fn handle_connection(self: Arc<Self>, conn: Connection) {
+        let ctoken = self.token.child_token();
         loop {
-            let ret = conn.accept_bi().await;
-            match ret {
-                Err(e) => {
-                    error!("Iroh connection error: {}", e);
-                    break;
-                },
-                Ok((send, recv)) => {
-                    let iss = Arc::new(IrohSendStream::new(send));
-                    tokio::spawn(self.clone().handle_recv_stream(recv, ConnectionBridgeSendStreamOrId::SendStream(iss)));
+            tokio::select!{
+                _ = ctoken.cancelled() => { break }
+                ret = conn.accept_bi() => {
+                    match ret {
+                        Err(e) => {
+                            error!("Iroh connection error: {}", e);
+                            self.shutdown();
+                            break;
+                        },
+                        Ok((mut send, mut recv)) => {
+                            if self.settings.max_streams > 0 && self.get_streams_num() < self.settings.max_streams {
+                                let iss = Arc::new(IrohSendStream::new(send));
+                                tokio::spawn(self.clone().handle_recv_stream(recv, ConnectionBridgeSendStreamOrId::SendStream(iss)));
+                            } else {
+                                send.finish();
+                                recv.stop(1u32.into());
+                            }
+                        }
+                    }
                 }
             }
         }
