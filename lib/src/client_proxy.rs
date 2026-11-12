@@ -6,6 +6,7 @@ use dashmap::DashMap;
 use log::{error, warn, info, debug};
 
 use sonic_rs::pointer;
+use tokio_util::sync::CancellationToken;
 use core::net::SocketAddr;
 use tokio;
 use tokio::net::{TcpListener, TcpStream};
@@ -37,7 +38,8 @@ struct ClientProxy {
     listener: TcpListener,
     bridges: ConnectionBridgesContainer,
     analyzer: Arc<WebSocketPacketAnalyzer>,
-    settings: Arc<ProxySettings>
+    settings: Arc<ProxySettings>,
+    token: CancellationToken
 }
 
 impl ClientProxy {
@@ -51,14 +53,24 @@ impl ClientProxy {
             remote_addr: remote_addr,
             bridges: ConnectionBridgesContainer::with_hasher(ahash::RandomState::new()),
             analyzer: analyzer,
-            settings: settings 
+            settings: settings,
+            token: CancellationToken::new()
         }
     }
 
+    pub fn shutdown(&self) {
+        self.token.cancel();
+    }
+
     pub async fn start(self: Arc<Self>) {
-        let self_clone = self.clone();
         loop {
-            let listen_ret = self_clone.listener.accept().await;
+            let token = self.token.clone();
+            let listen_o = tokio::select!{
+                _ = self.token.cancelled() => { None }
+                ret = self.listener.accept() => { Some(ret) }
+            };
+            if listen_o.is_none() { break }
+            let listen_ret = listen_o.unwrap();
             match listen_ret {
                 Err(e) => {
                     error!("Error while accepting TCP connection: {}", e);
@@ -72,7 +84,7 @@ impl ClientProxy {
                             continue
                         }
                         Ok((_req, stream)) => {
-                            let self_copy = self_clone.clone();
+                            let self_copy = self.clone();
                             tokio::spawn(async move {
                                 let ret = self_copy.endpoint.connect(self_copy.remote_addr.clone(), ALPN).await;
                                 match ret {
@@ -80,8 +92,9 @@ impl ClientProxy {
                                         error!("Error while connecting to remote endpoint: {}", e);
                                     }
                                     Ok(conn) => {
-                                        let cb = ConnectionBridge::new(
-                                            conn, stream, self_copy.analyzer.clone(), self_copy.settings.clone());
+                                        let cb = ConnectionBridge::new(conn,
+                                            stream, self_copy.analyzer.clone(),
+                                            self_copy.settings.clone(), &token);
                                         
                                         let cbp = Arc::new(cb);
                                         let handle1 = tokio::spawn(cbp.clone().handle_connection());

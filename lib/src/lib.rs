@@ -342,12 +342,12 @@ pub enum ConnectionBridgeSendStreamOrId {
 
 impl ConnectionBridge {
     pub fn new(conn: Connection, wsc: WebSocket, analyzer: Arc<WebSocketPacketAnalyzer>,
-        settings: Arc<ProxySettings>) -> Self {
+        settings: Arc<ProxySettings>, token: &CancellationToken) -> Self {
         Self { connection: conn,
             websocket: Mutex::new(wsc),
             ephemeral_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
             persistent_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
-            analyzer: analyzer, token: CancellationToken::new(), settings: settings }
+            analyzer: analyzer, token: token.child_token(), settings: settings }
     }
 
     pub fn shutdown(&self) {
