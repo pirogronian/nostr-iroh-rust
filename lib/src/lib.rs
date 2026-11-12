@@ -12,7 +12,7 @@ use std::num::TryFromIntError;
 use iroh::{EndpointAddr, endpoint::{Connection, ConnectionError, Endpoint, ReadError, RecvStream, SendStream, WriteError, presets}};
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use log::{error, warn, info, debug};
-use tokio;
+use tokio::{self, net::TcpStream};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -20,11 +20,12 @@ use sonic_rs::{JsonPointer, JsonValueTrait, PointerNode, parser::Reference::Borr
 use ahash::RandomState;
 use std::fmt::{Formatter};
 use std::sync::Arc;
-use tokio_websockets::proto::{WebSocketStream, Message};
+use tokio_websockets::{MaybeTlsStream, proto::{Message, WebSocketStream}};
 use futures_util::{SinkExt, StreamExt};
 
 use crate::GetIrohPacketError::UnexpectedEOS;
 
+pub mod client_proxy;
 pub mod test;
 
 pub const ALPN: &[u8] = b"nostr-iroh-proxy/0";
@@ -320,10 +321,12 @@ impl ProxySettings {
 //type IrohRecvStreamMap = dashmap::DashMap<String, RecvStream, ahash::RandomState>;
 type IrohSendStreamMap = dashmap::DashMap<String, Arc<IrohSendStream>, ahash::RandomState>;
 
-type AsyncWebSocket<T> = Mutex<WebSocketStream<T>>;
-pub struct ConnectionBridge<T: Send + 'static> {
+type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+type AsyncWebSocket = Mutex<WebSocket>;
+pub struct ConnectionBridge {
     connection: Connection,
-    websocket: AsyncWebSocket<T>,
+    websocket: AsyncWebSocket,
 //    recv_streams: IrohRecvStreamMap,
     ephemeral_send_streams: IrohSendStreamMap,
     persistent_send_streams: IrohSendStreamMap,
@@ -337,11 +340,11 @@ pub enum ConnectionBridgeSendStreamOrId {
     StreamExternalId(String)
 }
 
-impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {
-    pub fn new(conn: Connection, wsc: AsyncWebSocket<T>, analyzer: Arc<WebSocketPacketAnalyzer>,
+impl ConnectionBridge {
+    pub fn new(conn: Connection, wsc: WebSocket, analyzer: Arc<WebSocketPacketAnalyzer>,
         settings: Arc<ProxySettings>) -> Self {
         Self { connection: conn,
-            websocket: wsc,
+            websocket: Mutex::new(wsc),
             ephemeral_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
             persistent_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
             analyzer: analyzer, token: CancellationToken::new(), settings: settings }
@@ -528,12 +531,12 @@ impl<T> ConnectionBridge<T> where T: AsyncRead + AsyncWrite + Unpin + Send + 'st
         }
     }
 
-    pub async fn handle_connection(self: Arc<Self>, conn: Connection) {
+    pub async fn handle_connection(self: Arc<Self>) {
         let ctoken = self.token.child_token();
         loop {
             tokio::select!{
                 _ = ctoken.cancelled() => { break }
-                ret = conn.accept_bi() => {
+                ret = self.connection.accept_bi() => {
                     match ret {
                         Err(e) => {
                             error!("Iroh connection error: {}", e);
