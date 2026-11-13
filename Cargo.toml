@@ -1,5 +1,9 @@
+[package]
+name = "nostr-iroh"
+version = "0.1.0"
+edition = "2024"
 
-[workspace.dependencies]
+[dependencies]
 colored = "3.1.1"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.24"
@@ -21,9 +25,6 @@ dashmap = "6.2"
 tokio-websockets = "0.13"
 tokio-rustls = "0.26"
 
-[workspace]
-members = [
-    "lib",
-    "relay-proxy"
-]
-resolver = "2"
+[[bin]]
+name = "relay-proxy"
+path = "src/relay-proxy.rs"

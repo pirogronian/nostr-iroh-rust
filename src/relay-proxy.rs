@@ -1,6 +1,6 @@
 
-use lib::test::test_client_iroh_packet_sender;
-use lib::test::test_relay_handler;
+use nostr_iroh::test::test_client_iroh_packet_sender;
+use nostr_iroh::test::test_relay_handler;
 use log::{error, warn, info, debug};
 use std::path::PathBuf;
 use std::fs::File;
@@ -91,7 +91,7 @@ fn publish_pub_key(pub_key: PublicKey) -> Result<(), std::io::Error> {
 
 async fn init_endpoint(sec: SecretKey) -> Result<endpoint::Endpoint, endpoint::BindError> {
     let ep = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::N0)
-        .alpns(lib::ALPNs.to_vec())
+        .alpns(nostr_iroh::ALPNs.to_vec())
         .secret_key(sec)
         .bind()
         .await;
