@@ -27,6 +27,7 @@ use crate::GetIrohPacketError::UnexpectedEOS;
 
 pub mod client_proxy;
 pub mod test;
+pub mod ServerStream;
 
 pub const ALPN: &[u8] = b"nostr-iroh-proxy/0";
 
@@ -321,7 +322,7 @@ impl ProxySettings {
 //type IrohRecvStreamMap = dashmap::DashMap<String, RecvStream, ahash::RandomState>;
 type IrohSendStreamMap = dashmap::DashMap<String, Arc<IrohSendStream>, ahash::RandomState>;
 
-type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type WebSocket = WebSocketStream<ServerStream::ServerStream>;
 
 type AsyncWebSocket = Mutex<WebSocket>;
 pub struct ConnectionBridge {

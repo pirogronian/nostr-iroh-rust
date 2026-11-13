@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ahash;
 
 use dashmap::DashMap;
+use iroh::tls;
 use log::{error, warn, info, debug};
 
 use sonic_rs::pointer;
@@ -11,12 +12,13 @@ use core::net::SocketAddr;
 use tokio;
 use tokio::net::{TcpListener, TcpStream};
 use ahash::RandomState;
+use tokio_rustls::TlsAcceptor;
 
 use iroh::{EndpointAddr, SecretKey, endpoint::{BindError, Endpoint, presets}};
 use tokio_websockets::{MaybeTlsStream, ServerBuilder};
 
-
-use crate::{ALPN, ALPNs, ConnectionBridge, IrohPacket, ProxySettings, WebSocketPacketAnalyzer, WebSocketPacketsDatabase};
+use crate::{ALPN, ALPNs, ConnectionBridge, IrohPacket, ProxySettings,
+    WebSocketPacketAnalyzer, WebSocketPacketsDatabase, ServerStream::ServerStream};
 
 impl WebSocketPacketsDatabase {
     pub fn new_client_default() -> Self {
@@ -36,6 +38,7 @@ struct ClientProxy {
     endpoint: Endpoint,
     remote_addr: EndpointAddr,
     listener: TcpListener,
+    tls_acceptor: Option<Arc<TlsAcceptor>>,
     bridges: ConnectionBridgesContainer,
     analyzer: Arc<WebSocketPacketAnalyzer>,
     settings: Arc<ProxySettings>,
@@ -43,13 +46,17 @@ struct ClientProxy {
 }
 
 impl ClientProxy {
-    pub fn new(endpoint: Endpoint, listener: TcpListener, remote_addr: EndpointAddr, settings: Arc<ProxySettings>) -> Self {
+    pub fn new(endpoint: Endpoint, listener: TcpListener,
+        tls_acceptor: Option<Arc<TlsAcceptor>>, remote_addr: EndpointAddr,
+        settings: Arc<ProxySettings>) -> Self
+    {
         let db = Arc::new(WebSocketPacketsDatabase::new_client_default());
         let analyzer = Arc::new(WebSocketPacketAnalyzer::new(db));
 
         return Self {
             endpoint: endpoint,
             listener: listener,
+            tls_acceptor: tls_acceptor,
             remote_addr: remote_addr,
             bridges: ConnectionBridgesContainer::with_hasher(ahash::RandomState::new()),
             analyzer: analyzer,
@@ -77,7 +84,22 @@ impl ClientProxy {
                     break
                 }
                 Ok((tcp_stream, addr)) => {
-                    let ws_ret = ServerBuilder::new().accept(MaybeTlsStream::Plain(tcp_stream)).await;
+                    let maybe_tls = if let Some(tls_acceptor) = self.tls_acceptor.clone() {
+                        let ret = tls_acceptor.accept(tcp_stream).await;
+                        match ret {
+                            Err(e) => {
+                                error!("Error while accepting TLS stream: {e}");
+                                continue
+                            }
+                            Ok(tls_stream) => {
+                                ServerStream::Tls(tls_stream)
+                            }
+                        }
+
+                    } else {
+                        ServerStream::Plain(tcp_stream)
+                    };
+                    let ws_ret = ServerBuilder::new().accept(maybe_tls).await;
                     match ws_ret {
                         Err(e) => {
                             error!("Error while upgrading connection to WebSocket: {}", e);

@@ -19,6 +19,7 @@ hashbrown = "0.17"
 ahash = "0.8"
 dashmap = "6.2"
 tokio-websockets = "0.13"
+tokio-rustls = "0.26"
 
 [workspace]
 members = [
