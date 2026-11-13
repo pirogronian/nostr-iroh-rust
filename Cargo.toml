@@ -27,4 +27,4 @@ tokio-rustls = "0.26"
 
 [[bin]]
 name = "relay-proxy"
-path = "src/relay-proxy.rs"
+path = "src/relay_proxy.rs"

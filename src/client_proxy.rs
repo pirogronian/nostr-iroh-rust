@@ -18,7 +18,7 @@ use iroh::{EndpointAddr, SecretKey, endpoint::{BindError, Endpoint, presets}};
 use tokio_websockets::{MaybeTlsStream, ServerBuilder};
 
 use crate::{ALPN, ALPNs, ConnectionBridge, IrohPacket, ProxySettings,
-    WebSocketPacketAnalyzer, WebSocketPacketsDatabase, ServerStream::ServerStream};
+    WebSocketPacketAnalyzer, WebSocketPacketsDatabase, server_stream::ServerStream};
 
 impl WebSocketPacketsDatabase {
     pub fn new_client_default() -> Self {
