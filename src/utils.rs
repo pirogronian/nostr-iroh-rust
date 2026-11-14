@@ -5,6 +5,9 @@ use std::io::{Read, Write};
 use log::{error};
 use thiserror::Error;
 use iroh::{SecretKey};
+use iroh::endpoint::{Endpoint, BindError};
+
+use crate::{ALPNs};
 
 pub fn sec_to_string(sec: &SecretKey) -> String {
     return hex::encode(sec.to_bytes());
@@ -69,4 +72,10 @@ pub fn load_or_create_sec(path: &Path, break_on_error: bool) -> Result<SecretKey
         }
     }
     return Ok(sec)
+}
+
+pub async fn create_endpoint(sec: SecretKey) -> Result<Endpoint, BindError> {
+    return iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::N0)
+        .alpns(ALPNs.to_vec())
+        .secret_key(sec).bind().await;
 }

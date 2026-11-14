@@ -13,11 +13,11 @@ use std::os::unix::fs::PermissionsExt;
 use thiserror::Error;
 use directories::ProjectDirs;
 use iroh::{SecretKey, PublicKey};
-use iroh::endpoint;
+use iroh::endpoint::Endpoint;
 use tokio;
 use anyhow::Result;
 
-use crate::utils::{load_or_create_sec};
+use crate::utils::{load_or_create_sec, create_endpoint};
 
 const DOMAIN: &'static str = "pirogronian";
 const ORGANIZATION: &'static str = "nostr-iroh";
@@ -44,15 +44,6 @@ fn publish_pub_key(pub_key: PublicKey) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-async fn init_endpoint(sec: SecretKey) -> Result<endpoint::Endpoint, endpoint::BindError> {
-    let ep = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::N0)
-        .alpns(nostr_iroh::ALPNs.to_vec())
-        .secret_key(sec)
-        .bind()
-        .await;
-    ep
-}
-
 #[tokio::main]
 async fn main() {
     env_logger::init();
@@ -70,7 +61,7 @@ async fn main() {
     }
     let sec = sec_ret.unwrap();
     if let Err(e) = publish_pub_key(sec.public()) { error!("{}", e); }
-    let ep_ret = init_endpoint(sec).await;
+    let ep_ret = create_endpoint(sec).await;
     if let Err(msg) = ep_ret {
         error!("Cannot init the endpoint: {}", msg);
         return
