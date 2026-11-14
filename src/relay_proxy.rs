@@ -17,15 +17,7 @@ use iroh::endpoint;
 use tokio;
 use anyhow::Result;
 
-use crate::utils::{sec_to_string};
-
-#[derive(Error, Debug)]
-pub enum LoadSecKeyError {
-    #[error("Parsing secret error: {0}")]
-    KeyParsingError(#[from] iroh::KeyParsingError),
-    #[error("IO error while reading secret's file: {0}")]
-    IoError(#[from] std::io::Error)
-}
+use crate::utils::{load_or_create_sec};
 
 const DOMAIN: &'static str = "pirogronian";
 const ORGANIZATION: &'static str = "nostr-iroh";
@@ -38,46 +30,6 @@ fn get_config_dir() -> Option<PathBuf> {
         return Some(project_path.config_dir().to_path_buf());
     }
     None
-}
-
-fn init_sec_key() -> Result<SecretKey, LoadSecKeyError> {
-    let mut config_dir = PathBuf::new();
-    if let Some(path) = get_config_dir() { config_dir = path }
-    let file_path = config_dir.join(SECFILENAME);
-    debug!("Secret's file path: {:?}", file_path);
-    let mut ret = SecretKey::generate();
-    if let Ok(mut file) = File::open(&file_path) {
-        let mut s = String::new();
-        file.read_to_string(&mut s)?;
-        ret = SecretKey::from_str(&s)?;
-    } else {
-        let s = utils::sec_to_string(&ret);
-        if let Err(msg) = std::fs::create_dir_all(&config_dir) {
-            error!("Error while creating secret's file path: {}", msg);
-        }
-        let cfret = File::create(file_path);
-        match cfret {
-            Ok(mut file) => {
-                if let Ok(meta) = file.metadata() {
-                    let mut perm = meta.permissions();
-                    perm.set_mode(0600);
-                    if let Err(msg) = file.set_permissions(perm) {
-                        error!("Error while setting permissions to the secret's file: {}", msg);
-                    }
-                }
-                if let Err(msg) = file.write_all(&s.as_bytes()) {
-                    error!("Error while writing secret to a file: {}", msg);
-                }
-                if let Err(msg) = file.sync_all() {
-                    error!("Error while syncing file with a secret: {}", msg);
-                }
-            },
-            Err(msg) => {
-                error!("Error while creating secret's file: {}", msg)
-            }
-        }
-    }
-    Ok(ret)
 }
 
 fn publish_pub_key(pub_key: PublicKey) -> Result<(), std::io::Error> {
@@ -104,7 +56,14 @@ async fn init_endpoint(sec: SecretKey) -> Result<endpoint::Endpoint, endpoint::B
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    let sec_ret = init_sec_key();
+    let proj_path_o = get_config_dir();
+    if proj_path_o.is_none() {
+        error!("No project directory avaliable!");
+        return
+    }
+    let proj_path = proj_path_o.unwrap();
+    let sec_key_file_path = proj_path.join(SECFILENAME);
+    let sec_ret = load_or_create_sec(&sec_key_file_path, true);
     if let Err(msg) = sec_ret {
         error!("Cannot initiate secret key: {}", msg);
         return
