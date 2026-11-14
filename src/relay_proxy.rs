@@ -2,6 +2,7 @@
 use nostr_iroh::test::test_client_iroh_packet_sender;
 use nostr_iroh::test::test_relay_handler;
 use log::{error, warn, info, debug};
+use nostr_iroh::utils;
 use std::path::PathBuf;
 use std::fs::File;
 use std::io::Read;
@@ -15,6 +16,8 @@ use iroh::{SecretKey, PublicKey};
 use iroh::endpoint;
 use tokio;
 use anyhow::Result;
+
+use crate::utils::{sec_to_string};
 
 #[derive(Error, Debug)]
 pub enum LoadSecKeyError {
@@ -48,7 +51,7 @@ fn init_sec_key() -> Result<SecretKey, LoadSecKeyError> {
         file.read_to_string(&mut s)?;
         ret = SecretKey::from_str(&s)?;
     } else {
-        let s = hex::encode(ret.to_bytes());
+        let s = utils::sec_to_string(&ret);
         if let Err(msg) = std::fs::create_dir_all(&config_dir) {
             error!("Error while creating secret's file path: {}", msg);
         }

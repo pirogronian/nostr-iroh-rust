@@ -28,6 +28,7 @@ use crate::GetIrohPacketError::UnexpectedEOS;
 pub mod client_proxy;
 pub mod test;
 pub mod server_stream;
+pub mod utils;
 
 pub const ALPN: &[u8] = b"nostr-iroh-proxy/0";
 
