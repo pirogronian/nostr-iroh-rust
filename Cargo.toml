@@ -8,6 +8,8 @@ colored = "3.1.1"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.24"
 tokio-util = "0.7"
+tokio-websockets = "0.13"
+tokio-rustls = "0.26"
 futures-util = "0.3"
 directories = "5.0"
 log = "0.4.35"
@@ -22,8 +24,9 @@ sonic-rs = "0.5"
 hashbrown = "0.17"
 ahash = "0.8"
 dashmap = "6.2"
-tokio-websockets = "0.13"
-tokio-rustls = "0.26"
+serde = { version = "1.0", features = ["derive"] }
+figment = { version = "0.10", "features" = ["toml", "env"] }
+clap = { version = "4.5", features = ["derive"] }
 
 [[bin]]
 name = "relay-proxy"

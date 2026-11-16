@@ -22,6 +22,7 @@ use std::fmt::{Formatter};
 use std::sync::Arc;
 use tokio_websockets::{MaybeTlsStream, proto::{Message, WebSocketStream}};
 use futures_util::{SinkExt, StreamExt};
+use std::sync::atomic::*;
 
 use crate::GetIrohPacketError::UnexpectedEOS;
 
@@ -310,13 +311,13 @@ impl WebSocketPacketAnalyzer {
     }
 }
 
-pub struct ProxySettings {
-    max_streams: usize
+pub struct BridgeSettings {
+    max_streams: AtomicUsize
 }
 
-impl ProxySettings {
+impl BridgeSettings {
     pub fn new_default() -> Self {
-        return Self { max_streams: 0 }
+        return Self { max_streams: 0.into() }
     }
 }
 
@@ -334,7 +335,7 @@ pub struct ConnectionBridge {
     persistent_send_streams: IrohSendStreamMap,
     analyzer: Arc<WebSocketPacketAnalyzer>,
     token: CancellationToken,
-    pub settings: Arc<ProxySettings>
+    pub settings: Arc<BridgeSettings>
 }
 
 pub enum ConnectionBridgeSendStreamOrId {
@@ -344,7 +345,7 @@ pub enum ConnectionBridgeSendStreamOrId {
 
 impl ConnectionBridge {
     pub fn new(conn: Connection, wsc: WebSocket, analyzer: Arc<WebSocketPacketAnalyzer>,
-        settings: Arc<ProxySettings>, token: &CancellationToken) -> Self {
+        settings: Arc<BridgeSettings>, token: &CancellationToken) -> Self {
         Self { connection: conn,
             websocket: Mutex::new(wsc),
             ephemeral_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
@@ -380,7 +381,8 @@ impl ConnectionBridge {
             return Ok(r.value().clone())
         }
         
-        if self.settings.max_streams > 0 && self.get_streams_num() >= self.settings.max_streams {
+        let max_streams = self.settings.max_streams.load(Ordering::Acquire);
+        if max_streams > 0 && self.get_streams_num() >= max_streams {
             id = "";
             if let Some(r) = ssmap.get(id) {
                 return Ok(r.value().clone())
@@ -546,7 +548,8 @@ impl ConnectionBridge {
                             break;
                         },
                         Ok((mut send, mut recv)) => {
-                            if self.settings.max_streams > 0 && self.get_streams_num() < self.settings.max_streams {
+                            let max_streams = self.settings.max_streams.load(Ordering::Acquire);
+                            if max_streams > 0 && self.get_streams_num() < max_streams {
                                 let iss = Arc::new(IrohSendStream::new(send));
                                 tokio::spawn(self.clone().handle_recv_stream(recv, ConnectionBridgeSendStreamOrId::SendStream(iss)));
                             } else {

@@ -17,7 +17,7 @@ use tokio_rustls::TlsAcceptor;
 use iroh::{EndpointAddr, SecretKey, endpoint::{BindError, Endpoint, presets}};
 use tokio_websockets::{MaybeTlsStream, ServerBuilder};
 
-use crate::{ALPN, ALPNs, ConnectionBridge, IrohPacket, ProxySettings,
+use crate::{ALPN, ALPNs, ConnectionBridge, IrohPacket, BridgeSettings,
     WebSocketPacketAnalyzer, WebSocketPacketsDatabase, server_stream::ServerStream};
 
 impl WebSocketPacketsDatabase {
@@ -34,21 +34,21 @@ impl WebSocketPacketsDatabase {
 
 type ConnectionBridgesContainer = DashMap<SocketAddr, Arc<ConnectionBridge>, ahash::RandomState>;
 
-struct ClientProxy {
+pub struct ClientProxy {
     endpoint: Endpoint,
     remote_addr: EndpointAddr,
     listener: TcpListener,
     tls_acceptor: Option<Arc<TlsAcceptor>>,
     bridges: ConnectionBridgesContainer,
     analyzer: Arc<WebSocketPacketAnalyzer>,
-    settings: Arc<ProxySettings>,
+    pub bridge_settings: Arc<BridgeSettings>,
     token: CancellationToken
 }
 
 impl ClientProxy {
     pub fn new(endpoint: Endpoint, listener: TcpListener,
         tls_acceptor: Option<Arc<TlsAcceptor>>, remote_addr: EndpointAddr,
-        settings: Arc<ProxySettings>) -> Self
+        bridge_settings: Arc<BridgeSettings>) -> Self
     {
         let db = Arc::new(WebSocketPacketsDatabase::new_client_default());
         let analyzer = Arc::new(WebSocketPacketAnalyzer::new(db));
@@ -60,7 +60,7 @@ impl ClientProxy {
             remote_addr: remote_addr,
             bridges: ConnectionBridgesContainer::with_hasher(ahash::RandomState::new()),
             analyzer: analyzer,
-            settings: settings,
+            bridge_settings: bridge_settings,
             token: CancellationToken::new()
         }
     }
@@ -116,7 +116,7 @@ impl ClientProxy {
                                     Ok(conn) => {
                                         let cb = ConnectionBridge::new(conn,
                                             stream, self_copy.analyzer.clone(),
-                                            self_copy.settings.clone(), &token);
+                                            self_copy.bridge_settings.clone(), &token);
                                         
                                         let cbp = Arc::new(cb);
                                         let handle1 = tokio::spawn(cbp.clone().handle_connection());
