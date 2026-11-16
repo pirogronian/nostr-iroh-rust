@@ -1,6 +1,7 @@
 
 use std::sync::Arc;
 use ahash;
+use std::sync::atomic::*;
 
 use dashmap::DashMap;
 use iroh::tls;
@@ -34,6 +35,14 @@ impl WebSocketPacketsDatabase {
 
 type ConnectionBridgesContainer = DashMap<SocketAddr, Arc<ConnectionBridge>, ahash::RandomState>;
 
+struct BridgeGuard(Arc<ClientProxy>);
+
+impl Drop for BridgeGuard {
+    fn drop(&mut self) {
+        self.0.decrease_bridges_num();
+    }
+}
+
 pub struct ClientProxy {
     endpoint: Endpoint,
     remote_addr: EndpointAddr,
@@ -41,14 +50,17 @@ pub struct ClientProxy {
     tls_acceptor: Option<Arc<TlsAcceptor>>,
     bridges: ConnectionBridgesContainer,
     analyzer: Arc<WebSocketPacketAnalyzer>,
+    bridges_num: AtomicUsize,
     bridge_settings: Arc<BridgeSettings>,
+    max_connections: AtomicUsize,
     token: CancellationToken
 }
 
 impl ClientProxy {
     pub fn new(endpoint: Endpoint, listener: TcpListener,
         tls_acceptor: Option<Arc<TlsAcceptor>>, remote_addr: EndpointAddr,
-        bridge_settings: Arc<BridgeSettings>) -> Self
+        bridge_settings: Arc<BridgeSettings>,
+        max_connections: usize) -> Self
     {
         let db = Arc::new(WebSocketPacketsDatabase::new_client_default());
         let analyzer = Arc::new(WebSocketPacketAnalyzer::new(db));
@@ -60,13 +72,19 @@ impl ClientProxy {
             remote_addr: remote_addr,
             bridges: ConnectionBridgesContainer::with_hasher(ahash::RandomState::new()),
             analyzer: analyzer,
+            bridges_num: AtomicUsize::new(0),
             bridge_settings: bridge_settings,
+            max_connections: AtomicUsize::new(max_connections),
             token: CancellationToken::new()
         }
     }
 
     pub fn shutdown(&self) {
         self.token.cancel();
+    }
+
+    fn decrease_bridges_num(&self) {
+        self.bridges_num.fetch_sub(1, Ordering::Release);
     }
 
     pub async fn start(self: Arc<Self>) {
@@ -84,34 +102,43 @@ impl ClientProxy {
                     break
                 }
                 Ok((tcp_stream, addr)) => {
-                    let maybe_tls = if let Some(tls_acceptor) = self.tls_acceptor.clone() {
-                        let ret = tls_acceptor.accept(tcp_stream).await;
-                        match ret {
-                            Err(e) => {
-                                error!("Error while accepting TLS stream: {e}");
-                                continue
-                            }
-                            Ok(tls_stream) => {
-                                ServerStream::Tls(tls_stream)
-                            }
-                        }
+                    let curr_num = self.bridges_num.fetch_add(1, Ordering::AcqRel);
+                    let max_conn = self.max_connections.load(Ordering::Acquire);
+                    if max_conn > 0 && max_conn < curr_num {
+                        self.bridges_num.fetch_sub(1, Ordering::Release);
+                        drop(tcp_stream);
+                        continue
+                    }
 
-                    } else {
-                        ServerStream::Plain(tcp_stream)
-                    };
-                    let ws_ret = ServerBuilder::new().accept(maybe_tls).await;
-                    match ws_ret {
-                        Err(e) => {
-                            error!("Error while upgrading connection to WebSocket: {}", e);
-                            continue
-                        }
-                        Ok((_req, stream)) => {
-                            let self_copy = self.clone();
-                            tokio::spawn(async move {
+                    let self_copy = self.clone();
+                    tokio::spawn(async move {
+                        let _guard = BridgeGuard(self_copy.clone());
+                        let maybe_tls = if let Some(tls_acceptor) = self_copy.tls_acceptor.clone() {
+                            let ret = tls_acceptor.accept(tcp_stream).await;
+                            match ret {
+                                Err(e) => {
+                                    error!("Error while accepting TLS stream: {e}");
+                                    return
+                                }
+                                Ok(tls_stream) => {
+                                    ServerStream::Tls(tls_stream)
+                                }
+                            }
+                        } else {
+                            ServerStream::Plain(tcp_stream)
+                        };
+                        let ws_ret = ServerBuilder::new().accept(maybe_tls).await;
+                        match ws_ret {
+                            Err(e) => {
+                                error!("Error while upgrading connection to WebSocket: {}", e);
+                                return
+                            }
+                            Ok((_req, stream)) => {
                                 let ret = self_copy.endpoint.connect(self_copy.remote_addr.clone(), ALPN).await;
                                 match ret {
                                     Err(e) => {
                                         error!("Error while connecting to remote endpoint: {}", e);
+                                        return
                                     }
                                     Ok(conn) => {
                                         let cb = ConnectionBridge::new(conn,
@@ -132,9 +159,9 @@ impl ClientProxy {
                                         self_copy.bridges.remove(&addr);
                                     }
                                 }
-                            });
+                            }
                         }
-                    }
+                    });
                 }
             }
         }

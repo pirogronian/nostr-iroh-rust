@@ -18,6 +18,7 @@ use crate::{BridgeSettings, client_proxy::core::ClientProxy, utils::{self, LoadS
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     pub bind_addr: String,
+    pub max_connections: usize,
     pub max_streams: usize,
     pub remote_id: String,
     pub secret_key_file: Option<String>
@@ -27,6 +28,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             bind_addr: "127.0.0.1:8080".into(),
+            max_connections: 1000,
             max_streams: 10,
             remote_id: "".into(),
             secret_key_file: None
@@ -40,6 +42,9 @@ impl Default for Config {
 struct CliArgs {
     #[arg(short, long)]
     bind_addr: Option<String>,
+
+    #[arg(short, long)]
+    max_connections: Option<usize>,
 
     #[arg(short, long)]
     max_streams: Option<usize>,
@@ -85,6 +90,6 @@ impl ClientProxy {
 
         let ep = utils::create_endpoint(sec).await?;
 
-        Ok(ClientProxy::new(ep, listener, None, addr, bridge_settings))
+        Ok(ClientProxy::new(ep, listener, None, addr, bridge_settings, config.max_connections))
     }
 }
