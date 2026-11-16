@@ -41,7 +41,7 @@ pub struct ClientProxy {
     tls_acceptor: Option<Arc<TlsAcceptor>>,
     bridges: ConnectionBridgesContainer,
     analyzer: Arc<WebSocketPacketAnalyzer>,
-    pub bridge_settings: Arc<BridgeSettings>,
+    bridge_settings: Arc<BridgeSettings>,
     token: CancellationToken
 }
 
