@@ -1,7 +1,9 @@
 
+use core::fmt;
 use std::{path::{Path, PathBuf}, str::FromStr};
-use std::fs::{File, create_dir_all};
+use std::fs::{File};
 use std::io::{Read, Write};
+use std::clone::Clone;
 use log::{error};
 use thiserror::Error;
 use iroh::{SecretKey};
@@ -53,7 +55,7 @@ pub fn load_or_create_sec(path: &Path, break_on_error: bool) -> Result<SecretKey
     } else {
         let dirs_o = path.parent();
         if let Some(dirs) = dirs_o && !dirs.is_empty() {
-            if let Err(e) = create_dir_all(dirs) {
+            if let Err(e) = std::fs::create_dir_all(dirs) {
                 error!("Error while creating path to secret key file {}: {}", dirs.display(), e);
                 if break_on_error { return Err(LoadSecretKeyError::IoError(e)) }
                 return Ok(sec)
@@ -100,14 +102,32 @@ pub fn detect_environment() -> EnvironmentType {
         EnvironmentType::SystemService
     }
 }
-/*
-#[derive(Debug, Clone)]
-struct PathError {
+
+#[derive(Debug)]
+pub struct PathError {
     path: PathBuf,
     error: std::io::Error
 }
 
-*/
+impl fmt::Display for PathError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Error on path \"{}\": {}", self.path.display(), self.error)
+    }
+}
+
+impl std::error::Error for PathError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+pub fn create_dir_all(path: &Path) -> Result<(), PathError> {
+    let ret = std::fs::create_dir_all(path);
+    if let Err(err) = ret {
+        return Err(PathError { path: path.to_path_buf(), error: err })
+    }
+    Ok(())
+}
 
 pub struct Directories {
     system_config: PathBuf,
@@ -191,8 +211,11 @@ impl Directories {
             state: state_dir,
             runtime: runtime_dir }
     }
-/*
-    pub fn create_all(&self) {
-        create_dir_all(path)
-    }*/
+
+    pub fn create_all(&self) -> Result<(), PathError> {
+        create_dir_all(&self.user_config)?;
+        create_dir_all(&self.state)?;
+        create_dir_all(&self.runtime)?;
+        Ok(())
+    }
 }
