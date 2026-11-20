@@ -31,3 +31,7 @@ clap = { version = "4.5", features = ["derive"] }
 [[bin]]
 name = "relay-proxy"
 path = "src/relay_proxy.rs"
+
+[[bin]]
+name = "client-proxy"
+path = "src/client_proxy/cli.rs"
