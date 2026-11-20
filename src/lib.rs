@@ -26,6 +26,7 @@ use std::sync::atomic::*;
 
 use crate::GetIrohPacketError::UnexpectedEOS;
 
+pub mod relay_proxy;
 pub mod client_proxy;
 pub mod test;
 pub mod server_stream;

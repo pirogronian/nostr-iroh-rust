@@ -2345,6 +2345,7 @@ dependencies = [
  "futures-util",
  "hashbrown 0.17.1",
  "hex",
+ "http",
  "iroh",
  "iroh-tickets",
  "log",
