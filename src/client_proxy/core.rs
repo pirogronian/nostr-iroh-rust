@@ -44,7 +44,7 @@ impl Drop for BridgeGuard {
 }
 
 pub struct ClientProxy {
-    endpoint: Endpoint,
+    pub endpoint: Endpoint,
     remote_addr: EndpointAddr,
     listener: TcpListener,
     tls_acceptor: Option<Arc<TlsAcceptor>>,
