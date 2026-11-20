@@ -1,12 +1,13 @@
 
+use env_logger;
+use log::{debug, info, warn, error};
 use core::fmt;
-use std::{path::{Path, PathBuf}, str::FromStr};
+use std::{path::{Path, PathBuf, Component}, str::FromStr};
 use std::fs::{File};
 use std::io::{Read, Write};
 use std::clone::Clone;
-use log::{error};
 use thiserror::Error;
-use iroh::{SecretKey};
+use iroh::{SecretKey, PublicKey, EndpointId};
 use iroh::endpoint::{Endpoint, BindError};
 use std::env;
 use directories::ProjectDirs;
@@ -15,6 +16,10 @@ use crate::{ALPNs};
 
 pub fn sec_to_string(sec: &SecretKey) -> String {
     return hex::encode(sec.to_bytes());
+}
+
+pub fn pub_to_string(id: &EndpointId) -> String {
+    return hex::encode(id.as_bytes());
 }
 
 #[derive(Error, Debug)]
@@ -130,10 +135,10 @@ pub fn create_dir_all(path: &Path) -> Result<(), PathError> {
 }
 
 pub struct Directories {
-    system_config: PathBuf,
-    user_config: PathBuf,
-    state: PathBuf,
-    runtime: PathBuf
+    pub system_config: PathBuf,
+    pub user_config: PathBuf,
+    pub state: PathBuf,
+    pub runtime: PathBuf
 }
 
 impl Directories {
@@ -158,6 +163,7 @@ impl Directories {
             }
             None => PathBuf::new()
         };
+        //println!("User config dir: {}", user_config.display());
 
         let state_dir: PathBuf = match exec_env {
             EnvironmentType::Manual | EnvironmentType::UserService => {
@@ -218,4 +224,19 @@ impl Directories {
         create_dir_all(&self.runtime)?;
         Ok(())
     }
+}
+
+pub fn starts_with_existing_dir(path: &Path) -> bool {
+    match path.components().next() {
+        Some(Component::Normal(first)) => Path::new(first).is_dir(),
+        Some(Component::RootDir) => Path::new("/").is_dir(),
+        _ => false,
+    }
+}
+
+pub fn publish(ep_id: &PublicKey, dirs: &Directories, name: &str) -> Result<(), std::io::Error> {
+    let path = dirs.state.clone().join(name);
+    let mut file = File::create(&path)?;
+    file.write_all(pub_to_string(ep_id).as_bytes())?;
+    Ok(())
 }
