@@ -445,7 +445,7 @@ impl ConnectionBridge {
     pub async fn handle_recv_stream(
         self: Arc<Self>,
         stream: RecvStream,
-        ss_or_id: ConnectionBridgeSendStreamOrId) -> Result<(), GetIrohPacketError>
+        ss_or_id: ConnectionBridgeSendStreamOrId)
     {
         let ctoken = self.token.child_token();
         let mut irs: IrohRecvStream = IrohRecvStream::new(stream);
@@ -486,11 +486,12 @@ impl ConnectionBridge {
                     }
                     if let Err(e) = snd.send(Message::text(packet.payload.to_string())).await {
                         error!("Error while sending WebSocket message into queue: {e}");
+                        break;
                     }
                 }
             };
         }
-        res
+        self.shutdown();
     }
 
     pub async fn open_stream(self: Arc<Self>, id: &str, flags: u32) -> Result<Arc<IrohSendStream>, ConnectionError> {
@@ -539,7 +540,7 @@ impl ConnectionBridge {
                             Ok(_) => { continue; }
                         }
                     }
-                    continue;
+                    break;
                 }
                 o = ws.recv() => { if o.is_none() { closed = true };  o }
             };
@@ -573,11 +574,10 @@ impl ConnectionBridge {
                                                 if let Err(e) = send_ret {
                                                     error!("Error while sending packet to Iroh stream: {}", e);
                                                     error = true;
-                                                    closing = true;
+                                                    break;
                                                 }
                                                 if closing {
                                                     self.remove_send_stream(&id, flags, true).await;
-                                                    break;
                                                 }
                                             }
                                         }
@@ -607,7 +607,7 @@ impl ConnectionBridge {
                         },
                         Ok((mut send, mut recv)) => {
                             let max_streams = self.settings.max_streams.load(Ordering::Acquire);
-                            if max_streams > 0 && self.get_streams_num() < max_streams {
+                            if max_streams == 0 || self.get_streams_num() < max_streams {
                                 let iss = Arc::new(IrohSendStream::new(send));
                                 tokio::spawn(self.clone().handle_recv_stream(recv, ConnectionBridgeSendStreamOrId::SendStream(iss)));
                             } else {
