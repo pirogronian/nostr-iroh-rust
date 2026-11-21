@@ -19,7 +19,7 @@ use iroh::{EndpointAddr, SecretKey, endpoint::{BindError, Endpoint, presets}};
 use tokio_websockets::{MaybeTlsStream, ServerBuilder};
 
 use crate::{ALPN, ALPNs, ConnectionBridge, IrohPacket, BridgeSettings,
-    WebSocketPacketAnalyzer, WebSocketPacketsDatabase, server_stream::ServerStream};
+    WebSocketPacketAnalyzer, WebSocketPacketsDatabase, variant_stream::VariantStream};
 
 impl WebSocketPacketsDatabase {
     pub fn new_client_default() -> Self {
@@ -121,11 +121,11 @@ impl ClientProxy {
                                     return
                                 }
                                 Ok(tls_stream) => {
-                                    ServerStream::Tls(tls_stream)
+                                    VariantStream::Tls(tls_stream)
                                 }
                             }
                         } else {
-                            ServerStream::Plain(tcp_stream)
+                            VariantStream::Plain(tcp_stream)
                         };
                         let ws_ret = ServerBuilder::new().accept(maybe_tls).await;
                         match ws_ret {
