@@ -12,7 +12,7 @@ use std::num::TryFromIntError;
 use iroh::{EndpointAddr, endpoint::{Connection, ConnectionError, Endpoint, ReadError, RecvStream, SendStream, WriteError, presets}};
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use log::{error, warn, info, debug};
-use tokio::{self, net::TcpStream};
+use tokio::{self, net::TcpStream, sync::mpsc};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -21,7 +21,7 @@ use ahash::RandomState;
 use std::fmt::{Formatter};
 use std::sync::Arc;
 use tokio_websockets::{MaybeTlsStream, proto::{Message, WebSocketStream}};
-use futures_util::{SinkExt, StreamExt, stream::Next};
+use futures_util::{Sink, SinkExt, StreamExt, Stream, stream::Next};
 use std::sync::atomic::*;
 
 use crate::GetIrohPacketError::UnexpectedEOS;
@@ -348,15 +348,23 @@ impl WebSocketWrapper {
         }
     }
 
+    pub async fn flush(&mut self) -> Result<(), tokio_websockets::Error> {
+        return match self {
+            Self::Variant(v) => v.flush().await,
+            Self::MaybeTls(v) => v.flush().await
+        }
+    }
+
     pub async fn close(&mut self) {
-        _ = self.send(Message::close(None, ""));
+        _ = self.send(Message::close(None, "")).await;
+        
     }
 }
-
-type AsyncWebSocket = Mutex<WebSocketWrapper>;
 pub struct ConnectionBridge {
     connection: Connection,
-    websocket: AsyncWebSocket,
+    websocket: Mutex<Option<WebSocketWrapper>>,
+    ws_send: mpsc::Sender<Message>,
+    ws_recv: Mutex<Option<mpsc::Receiver<Message>>>,
 //    recv_streams: IrohRecvStreamMap,
     ephemeral_send_streams: IrohSendStreamMap,
     persistent_send_streams: IrohSendStreamMap,
@@ -373,8 +381,11 @@ pub enum ConnectionBridgeSendStreamOrId {
 impl ConnectionBridge {
     pub fn new(conn: Connection, wsc: WebSocketWrapper, analyzer: Arc<WebSocketPacketAnalyzer>,
         settings: Arc<BridgeSettings>, token: &CancellationToken) -> Self {
+        let (snd, rcv) = mpsc::channel::<Message>(16);
         Self { connection: conn,
-            websocket: Mutex::new(wsc),
+            websocket: Mutex::new(Some(wsc)),
+            ws_send: snd,
+            ws_recv: Mutex::new(Some(rcv)),
             ephemeral_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
             persistent_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
             analyzer: analyzer, token: token.child_token(), settings: settings }
@@ -441,6 +452,7 @@ impl ConnectionBridge {
         let mut res: Result<(), GetIrohPacketError> = Ok(());
         let mut stream_id = "".to_string();
         let mut iroh_send_stream: Option<Arc<IrohSendStream>> = None;
+        let snd = self.ws_send.clone();
         match ss_or_id {
             ConnectionBridgeSendStreamOrId::StreamExternalId(s) => { stream_id = s; },
             ConnectionBridgeSendStreamOrId::SendStream(ss) => { iroh_send_stream = Some(ss); }
@@ -471,18 +483,9 @@ impl ConnectionBridge {
                             error!("Another stream with id {} already registered!", stream_id);
                         }
                         ssmap.insert(stream_id.clone(), s);
-                    }/* else {
-                        if stream_id != packet.id {
-                            error!("Packet id inequal to stream id: {} != {}", stream_id, packet.id);
-                        }
-                    }*/
-                    let ret = self.websocket.lock().await.send(Message::text(packet.payload.to_string())).await;
-                    if let Err(e) = ret {
-                        error!("Error while sending message to WebSocket: {}", e);
-                        irs.stop(1);
-                        self.remove_send_stream(&stream_id, packet.flags, true).await;
-                        self.shutdown();
-                        break;
+                    }
+                    if let Err(e) = snd.send(Message::text(packet.payload.to_string())).await {
+                        error!("Error while sending WebSocket message into queue: {e}");
                     }
                 }
             };
@@ -504,16 +507,41 @@ impl ConnectionBridge {
     }
 
     pub async fn handle_websocket(self: Arc<Self>) {
-        let ws = &self.websocket;
         let analyzer = &self.analyzer;
         let ctoken = self.token.child_token();
+        let mut error = false;
+        let mut closed = false;
+        let mut ws = {
+            let mut o = self.websocket.lock().await.take();
+            match o {
+                Some(ws) => ws,
+                None => { return }
+            }
+        };
+        let mut rcv = {
+            let mut o = self.ws_recv.lock().await.take();
+            match o {
+                Some(ws) => ws,
+                None => { return }
+            }
+        };
         loop {
             let data_o = tokio::select!{
                 _ = ctoken.cancelled() => { None }
-                o = async {
-                    let mut guard = ws.lock().await;
-                    guard.recv().await
-                } => { o }
+                msg_o = rcv.recv() => {
+                    if let Some(msg) = msg_o {
+                        match ws.send(msg).await {
+                            Err(e) => {
+                                error!("Error while sending message into WebSocket: {e}");
+                                error = true;
+                                break;
+                            }
+                            Ok(_) => { continue; }
+                        }
+                    }
+                    continue;
+                }
+                o = ws.recv() => { if o.is_none() { closed = true };  o }
             };
             if ctoken.is_cancelled() { break }
             match data_o {
@@ -522,7 +550,7 @@ impl ConnectionBridge {
                     match res {
                         Err(e) => {
                             error!("Error while reading packet from WebSocket: {}", e);
-                            self.shutdown(); break },
+                            error = true; break },
                         Ok(msg) => {
                             if msg.is_text() {
                                 if let Some(data) = msg.as_text() {
@@ -544,11 +572,12 @@ impl ConnectionBridge {
                                                 let send_ret = iss.send_packet(&packet).await;
                                                 if let Err(e) = send_ret {
                                                     error!("Error while sending packet to Iroh stream: {}", e);
-                                                    self.shutdown();
+                                                    error = true;
                                                     closing = true;
                                                 }
                                                 if closing {
                                                     self.remove_send_stream(&id, flags, true).await;
+                                                    break;
                                                 }
                                             }
                                         }
@@ -560,7 +589,8 @@ impl ConnectionBridge {
                 }
             }
         }
-        ws.lock().await.close();
+        if !(error || closed) { ws.close().await; }
+        self.shutdown();
     }
 
     pub async fn handle_connection(self: Arc<Self>) {
