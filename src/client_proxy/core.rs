@@ -18,7 +18,7 @@ use tokio_rustls::TlsAcceptor;
 use iroh::{EndpointAddr, SecretKey, endpoint::{BindError, Endpoint, presets}};
 use tokio_websockets::{MaybeTlsStream, ServerBuilder};
 
-use crate::{ALPN, ALPNs, ConnectionBridge, IrohPacket, BridgeSettings,
+use crate::{ALPN, ALPNs, ConnectionBridge, IrohPacket, BridgeSettings, WebSocketWrapper,
     WebSocketPacketAnalyzer, WebSocketPacketsDatabase, variant_stream::VariantStream};
 
 impl WebSocketPacketsDatabase {
@@ -142,7 +142,7 @@ impl ClientProxy {
                                     }
                                     Ok(conn) => {
                                         let cb = ConnectionBridge::new(conn,
-                                            stream, self_copy.analyzer.clone(),
+                                            WebSocketWrapper::Variant(stream), self_copy.analyzer.clone(),
                                             self_copy.bridge_settings.clone(), &token);
                                         
                                         let cbp = Arc::new(cb);

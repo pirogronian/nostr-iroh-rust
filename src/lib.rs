@@ -21,7 +21,7 @@ use ahash::RandomState;
 use std::fmt::{Formatter};
 use std::sync::Arc;
 use tokio_websockets::{MaybeTlsStream, proto::{Message, WebSocketStream}};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, stream::Next};
 use std::sync::atomic::*;
 
 use crate::GetIrohPacketError::UnexpectedEOS;
@@ -325,9 +325,35 @@ impl BridgeSettings {
 //type IrohRecvStreamMap = dashmap::DashMap<String, RecvStream, ahash::RandomState>;
 type IrohSendStreamMap = dashmap::DashMap<String, Arc<IrohSendStream>, ahash::RandomState>;
 
-pub type WebSocket = WebSocketStream<variant_stream::VariantStream>;
+pub type VariantWebSocket = WebSocketStream<variant_stream::VariantStream>;
+pub type MaybeTlsWebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-type AsyncWebSocket = Mutex<WebSocket>;
+pub enum WebSocketWrapper {
+    Variant(VariantWebSocket),
+    MaybeTls(MaybeTlsWebSocket)
+}
+
+impl WebSocketWrapper {
+    pub async fn recv(&mut self) -> Option<Result<tokio_websockets::Message, tokio_websockets::Error>> {
+        return match self {
+            Self::Variant(v) => v.next().await,
+            Self::MaybeTls(v) => v.next().await
+        }
+    }
+
+    pub async fn send(&mut self, msg: tokio_websockets::Message) -> Result<(), tokio_websockets::Error> {
+        return match self {
+            Self::Variant(v) => v.send(msg).await,
+            Self::MaybeTls(v) => v.send(msg).await,
+        }
+    }
+
+    pub async fn close(&mut self) {
+        _ = self.send(Message::close(None, ""));
+    }
+}
+
+type AsyncWebSocket = Mutex<WebSocketWrapper>;
 pub struct ConnectionBridge {
     connection: Connection,
     websocket: AsyncWebSocket,
@@ -345,7 +371,7 @@ pub enum ConnectionBridgeSendStreamOrId {
 }
 
 impl ConnectionBridge {
-    pub fn new(conn: Connection, wsc: WebSocket, analyzer: Arc<WebSocketPacketAnalyzer>,
+    pub fn new(conn: Connection, wsc: WebSocketWrapper, analyzer: Arc<WebSocketPacketAnalyzer>,
         settings: Arc<BridgeSettings>, token: &CancellationToken) -> Self {
         Self { connection: conn,
             websocket: Mutex::new(wsc),
@@ -486,7 +512,7 @@ impl ConnectionBridge {
                 _ = ctoken.cancelled() => { None }
                 o = async {
                     let mut guard = ws.lock().await;
-                    guard.next().await
+                    guard.recv().await
                 } => { o }
             };
             if ctoken.is_cancelled() { break }
@@ -534,6 +560,7 @@ impl ConnectionBridge {
                 }
             }
         }
+        ws.lock().await.close();
     }
 
     pub async fn handle_connection(self: Arc<Self>) {
