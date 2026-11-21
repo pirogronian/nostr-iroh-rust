@@ -73,33 +73,36 @@ impl RelayProxy {
     }
 
     pub async fn start(self: Arc<Self>) {
+        let self2 = self.clone();
         loop {
-            let iroh_conn = match self.endpoint.accept().await {
-                None => { info!("No more connection to accept, breaking."); break; }
-                Some(inc) => {
-                    match inc.await {
-                        Err(e) => {
-                            error!("Error while accepting connection: {}", e);
-                            continue;
+            let iroh_conn = tokio::select! {
+                _ = self2.token.cancelled() => { break; }
+                ret = self2.endpoint.accept() => match ret {
+                    None => { info!("No more connection to accept, breaking."); break; }
+                    Some(inc) => {
+                        match inc.await {
+                            Err(e) => {
+                                error!("Error while accepting connection: {}", e);
+                                continue;
+                            }
+                            Ok(conn) => conn
                         }
-                        Ok(conn) => conn
                     }
                 }
             };
-            let curr_conn_num = self.bridges_num.fetch_add(1, Ordering::AcqRel);
-            let max_conn_num = self.max_connections.load(Ordering::Acquire);
-            if max_conn_num > 0 && curr_conn_num > max_conn_num {
+            let curr_conn_num = self2.bridges_num.fetch_add(1, Ordering::AcqRel);
+            let max_conn_num = self2.max_connections.load(Ordering::Acquire);
+            if max_conn_num > 0 && curr_conn_num >= max_conn_num {
                 iroh_conn.close(1u32.into(), "Too many connections".as_bytes());
-                self.bridges_num.fetch_sub(1, Ordering::Release);
+                self2.bridges_num.fetch_sub(1, Ordering::Release);
                 continue;
             }
 
-            let self_copy = self.clone();
+            let self3 = self2.clone();
             tokio::spawn(async move{
-                let _guard = BridgeGuard(self_copy.clone());
-
+                let _guard = BridgeGuard(self3.clone());
                 
-                let ws_conn = match ClientBuilder::from_uri(self_copy.remote_uri.clone()).connect().await {
+                let ws_conn = match ClientBuilder::from_uri(self3.remote_uri.clone()).connect().await {
                     Err(e) => {
                         error!("Error while connectiing to remote WebSocket: {}", e);
                         return
@@ -107,10 +110,24 @@ impl RelayProxy {
                     Ok((conn, _resp)) => conn
                 };
 
-                
+                let id = iroh_conn.stable_id();
                 let cb = ConnectionBridge::new(
-                    iroh_conn,
-                    WebSocketWrapper::MaybeTls(ws_conn), self.analyzer.clone(), self.bridge_settings.clone(), &self.token);
+                    iroh_conn, WebSocketWrapper::MaybeTls(ws_conn),
+                    self3.analyzer.clone(), self3.bridge_settings.clone(), &self3.token);
+
+                let cbp = Arc::new(cb);
+                let handle1 = tokio::spawn(cbp.clone().handle_connection());
+                let handle2 = tokio::spawn(cbp.clone().handle_websocket());
+
+                self3.bridges.insert(id, cbp.clone());
+
+                tokio::select! {
+                    _ = handle1 => {}
+                    _ = handle2 => {}
+                }
+                cbp.shutdown();
+
+                self3.bridges.remove(&id);
             });
         }
     }
