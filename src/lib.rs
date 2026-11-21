@@ -365,7 +365,7 @@ pub struct ConnectionBridge {
     websocket: Mutex<Option<WebSocketWrapper>>,
     ws_send: mpsc::Sender<Message>,
     ws_recv: Mutex<Option<mpsc::Receiver<Message>>>,
-//    recv_streams: IrohRecvStreamMap,
+    streams_num: AtomicUsize,
     ephemeral_send_streams: IrohSendStreamMap,
     persistent_send_streams: IrohSendStreamMap,
     analyzer: Arc<WebSocketPacketAnalyzer>,
@@ -378,6 +378,14 @@ pub enum ConnectionBridgeSendStreamOrId {
     StreamExternalId(String)
 }
 
+struct StreamGuard(Arc<ConnectionBridge>);
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        self.0.decrease_streams_num();
+    }
+}
+
 impl ConnectionBridge {
     pub fn new(conn: Connection, wsc: WebSocketWrapper, analyzer: Arc<WebSocketPacketAnalyzer>,
         settings: Arc<BridgeSettings>, token: &CancellationToken) -> Self {
@@ -386,6 +394,7 @@ impl ConnectionBridge {
             websocket: Mutex::new(Some(wsc)),
             ws_send: snd,
             ws_recv: Mutex::new(Some(rcv)),
+            streams_num: AtomicUsize::new(0),
             ephemeral_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
             persistent_send_streams: IrohSendStreamMap::with_hasher(ahash::RandomState::new()),
             analyzer: analyzer, token: token.child_token(), settings: settings }
@@ -409,7 +418,16 @@ impl ConnectionBridge {
     }
 
     pub fn get_streams_num(&self) -> usize {
-        return self.ephemeral_send_streams.len() + self.persistent_send_streams.len();
+        //return self.ephemeral_send_streams.len() + self.persistent_send_streams.len();
+        return self.streams_num.load(Ordering::Acquire)
+    }
+
+    pub fn increase_streams_num(&self) -> usize {
+        return self.streams_num.fetch_add(1, Ordering::AcqRel)
+    }
+
+    pub fn decrease_streams_num(&self) -> usize {
+        return self.streams_num.fetch_sub(1, Ordering::AcqRel)
     }
 
     pub async fn get_or_open_send_stream(self: &Arc<Self>, mut id: &str,
@@ -447,6 +465,7 @@ impl ConnectionBridge {
         stream: RecvStream,
         ss_or_id: ConnectionBridgeSendStreamOrId)
     {
+        let _guard = StreamGuard(self.clone());
         let ctoken = self.token.child_token();
         let mut irs: IrohRecvStream = IrohRecvStream::new(stream);
         let mut res: Result<(), GetIrohPacketError> = Ok(());
@@ -486,12 +505,12 @@ impl ConnectionBridge {
                     }
                     if let Err(e) = snd.send(Message::text(packet.payload.to_string())).await {
                         error!("Error while sending WebSocket message into queue: {e}");
+                        self.shutdown();
                         break;
                     }
                 }
             };
         }
-        self.shutdown();
     }
 
     pub async fn open_stream(self: Arc<Self>, id: &str, flags: u32) -> Result<Arc<IrohSendStream>, ConnectionError> {
@@ -501,6 +520,7 @@ impl ConnectionBridge {
         ssmap.insert(id.to_string(), iss.clone());
         let self_clone = Arc::clone(&self);
         let arg = ConnectionBridgeSendStreamOrId::StreamExternalId(id.to_string());
+        self.increase_streams_num();
         tokio::spawn(async move {
             self_clone.handle_recv_stream(recv, arg).await;
         });
@@ -609,6 +629,7 @@ impl ConnectionBridge {
                             let max_streams = self.settings.max_streams.load(Ordering::Acquire);
                             if max_streams == 0 || self.get_streams_num() < max_streams {
                                 let iss = Arc::new(IrohSendStream::new(send));
+                                self.increase_streams_num();
                                 tokio::spawn(self.clone().handle_recv_stream(recv, ConnectionBridgeSendStreamOrId::SendStream(iss)));
                             } else {
                                 send.finish();
