@@ -4,14 +4,13 @@ use std::sync::atomic::AtomicUsize;
 use iroh::{EndpointAddr, KeyParsingError, SecretKey, PublicKey, endpoint::BindError};
 use log::*;
 use serde::{Serialize, Deserialize};
-use figment::{Figment, providers::{Format, Toml, Env, Serialized}};
 use clap::Parser;
 use tokio::net::TcpListener;
 use thiserror::Error;
 use std::sync::Arc;
 use core::str::FromStr;
 use core::convert::From;
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 
 use crate::{BridgeSettings, client_proxy::core::ClientProxy,
     utils::{self, LoadSecretKeyError, starts_with_existing_dir, Directories}};
@@ -69,7 +68,7 @@ pub struct CliArgs {
 
     #[arg(short, long)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub secure_key_file: Option<String>,
+    pub secret_key_file: Option<String>,
 
     #[arg(short, long)]
     #[serde(skip_serializing_if = "Option::is_none")]
