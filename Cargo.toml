@@ -32,3 +32,7 @@ http = "1.5.0"
 [[bin]]
 name = "client-proxy"
 path = "src/client_proxy/cli.rs"
+
+[[bin]]
+name = "relay-proxy"
+path = "src/relay_proxy/cli.rs"

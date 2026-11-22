@@ -37,7 +37,7 @@ impl Drop for BridgeGuard {
 type ConnectionBridgesContainer = DashMap<usize, Arc<ConnectionBridge>, ahash::RandomState>;
 
 pub struct RelayProxy {
-    endpoint: Endpoint,
+    pub endpoint: Endpoint,
     remote_uri: Uri,
     analyzer: Arc<WebSocketPacketAnalyzer>,
     bridges: ConnectionBridgesContainer,
