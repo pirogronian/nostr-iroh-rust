@@ -10,7 +10,11 @@ use thiserror::Error;
 use iroh::{SecretKey, PublicKey, EndpointId};
 use iroh::endpoint::{Endpoint, BindError};
 use std::env;
+use std::sync::Arc;
 use directories::ProjectDirs;
+use tokio_rustls::{client::TlsConnector, rustls::crypto::CryptoProvider};
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::{ALPNs};
 
@@ -239,4 +243,17 @@ pub fn publish(ep_id: &PublicKey, dirs: &Directories, name: &str) -> Result<(), 
     let mut file = File::create(&path)?;
     file.write_all(pub_to_string(ep_id).as_bytes())?;
     Ok(())
+}
+
+pub fn create_tls_connector() -> tokio_rustls::client::TlsConnector {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    let mut root_store = RootCertStore::empty();
+    root_store.extend(TLS_SERVER_ROOTS.iter().cloned());
+
+    let config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    TlsConnector::from(Arc::new(config))
 }

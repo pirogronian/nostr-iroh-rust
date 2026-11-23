@@ -8,7 +8,8 @@ use tokio_util::sync::CancellationToken;
 use std::sync::Arc;
 use dashmap::DashMap;
 use sonic_rs::pointer;
-use tokio_websockets::{ClientBuilder, Error};
+use tokio_websockets::{ClientBuilder, Error, Connector};
+use tokio_rustls::{self, client};
 
 use crate::{ALPNs, ConnectionBridge, IrohPacket, BridgeSettings,
     WebSocketPacketAnalyzer, WebSocketPacketsDatabase, WebSocketWrapper};
@@ -39,6 +40,7 @@ type ConnectionBridgesContainer = DashMap<usize, Arc<ConnectionBridge>, ahash::R
 pub struct RelayProxy {
     pub endpoint: Endpoint,
     remote_uri: Uri,
+    connector: Option<Connector>,
     analyzer: Arc<WebSocketPacketAnalyzer>,
     bridges: ConnectionBridgesContainer,
     bridges_num: AtomicUsize,
@@ -48,13 +50,15 @@ pub struct RelayProxy {
 }
 
 impl RelayProxy {
-    pub fn new(ep: Endpoint, remote_uri: Uri, bridge_settings: Arc<BridgeSettings>, max_connections: usize) -> Self {
+    pub fn new(ep: Endpoint, remote_uri: Uri, connector: Option<Connector>,
+        bridge_settings: Arc<BridgeSettings>, max_connections: usize) -> Self {
         let db = Arc::new(WebSocketPacketsDatabase::new_proxy_default());
         let analyzer = Arc::new(WebSocketPacketAnalyzer::new(db));
 
         return Self {
             endpoint: ep,
             remote_uri: remote_uri,
+            connector: connector,
             analyzer: analyzer,
             bridges: ConnectionBridgesContainer::with_hasher(ahash::RandomState::new()),
             bridges_num: AtomicUsize::new(0),
@@ -102,7 +106,11 @@ impl RelayProxy {
             tokio::spawn(async move{
                 let _guard = BridgeGuard(self3.clone());
                 
-                let ws_conn = match ClientBuilder::from_uri(self3.remote_uri.clone()).connect().await {
+                let mut b = ClientBuilder::from_uri(self3.remote_uri.clone());
+                if let Some(c) = &self3.connector {
+                    b = b.connector(c);
+                }
+                let ws_conn = match b.connect().await {
                     Err(e) => {
                         error!("Error while connectiing to remote WebSocket: {}", e);
                         return

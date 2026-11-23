@@ -2349,6 +2349,7 @@ dependencies = [
  "iroh",
  "iroh-tickets",
  "log",
+ "rustls",
  "serde",
  "sonic-rs",
  "thiserror 2.0.21",
@@ -2357,6 +2358,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "tokio-websockets",
+ "webpki-roots",
 ]
 
 [[package]]

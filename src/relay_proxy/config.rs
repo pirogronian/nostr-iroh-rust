@@ -7,13 +7,15 @@ use log::*;
 use serde::{Serialize, Deserialize};
 use clap::Parser;
 use thiserror::Error;
+use tokio_websockets::Connector;
 use std::sync::Arc;
 use core::str::FromStr;
 use core::convert::From;
 use std::path::{PathBuf};
 
 use crate::{BridgeSettings, relay_proxy::core::RelayProxy,
-    utils::{self, LoadSecretKeyError, starts_with_existing_dir, Directories}};
+    utils::{self, LoadSecretKeyError, starts_with_existing_dir, Directories,
+    create_tls_connector}};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
@@ -85,6 +87,16 @@ impl RelayProxy {
     pub async fn from_config(config: &Config, dirs: &Directories) -> Result<Self, CreateError> {
         let uri = Uri::from_str(&config.relay_addr)?;
 
+        let connector = match uri.scheme_str() {
+            Some(scheme) => {
+                if scheme == "wss" {
+                    Connector::Rustls(create_tls_connector())
+                }
+                else { Connector::Plain }
+            }
+            None => Connector::Plain
+        };
+
         let bridge_settings = Arc::new(BridgeSettings {
             max_streams: AtomicUsize::new(config.max_streams)
         });
@@ -101,6 +113,6 @@ impl RelayProxy {
 
         let ep = utils::create_endpoint(sec).await?;
 
-        Ok(RelayProxy::new(ep, uri, bridge_settings, config.max_connections))
+        Ok(RelayProxy::new(ep, uri, Some(connector), bridge_settings, config.max_connections))
     }
 }
