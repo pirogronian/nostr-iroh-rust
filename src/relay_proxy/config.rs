@@ -22,7 +22,9 @@ pub struct Config {
     pub max_connections: usize,
     pub max_streams: usize,
     pub relay_addr: String,
-    pub secret_key_file: Option<String>
+    pub secret_key_file: Option<String>,
+    pub print_iroh_messages: bool,
+    pub print_websocket_messages: bool
 }
 
 impl Config {
@@ -31,6 +33,8 @@ impl Config {
         println!("max_streams: {}", self.max_streams);
         println!("relay_addr: {}", self.relay_addr);
         println!("secret_key_file: {:?}", self.secret_key_file);
+        println!("print_iroh_messages: {:?}", self.print_iroh_messages);
+        println!("print_websocket_messages: {:?}", self.print_websocket_messages);
     }
 }
 
@@ -40,7 +44,9 @@ impl Default for Config {
             max_connections: 1000,
             max_streams: 10,
             relay_addr: "ws://127.0.0.1:8080".into(),
-            secret_key_file: Some("secret.prv".to_string())
+            secret_key_file: Some("secret.prv".to_string()),
+            print_iroh_messages: false,
+            print_websocket_messages: false
         }
     }
 }
@@ -63,6 +69,14 @@ pub struct CliArgs {
     #[arg(short, long)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret_key_file: Option<String>,
+
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub print_iroh_messages: Option<bool>,
+
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub print_websocket_messages: Option<bool>,
 
     #[arg(short, long)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -98,7 +112,9 @@ impl RelayProxy {
         };
 
         let bridge_settings = Arc::new(BridgeSettings {
-            max_streams: AtomicUsize::new(config.max_streams)
+            max_streams: AtomicUsize::new(config.max_streams),
+            print_iroh_messages: config.print_iroh_messages.into(),
+            print_websocket_messages: config.print_websocket_messages.into()
         });
 
         let sec: SecretKey = if let Some(s) = &config.secret_key_file {

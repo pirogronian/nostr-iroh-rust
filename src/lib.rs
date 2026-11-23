@@ -313,12 +313,18 @@ impl WebSocketPacketAnalyzer {
 }
 
 pub struct BridgeSettings {
-    max_streams: AtomicUsize
+    max_streams: AtomicUsize,
+    print_iroh_messages: AtomicBool,
+    print_websocket_messages: AtomicBool
 }
 
 impl BridgeSettings {
     pub fn new_default() -> Self {
-        return Self { max_streams: 0.into() }
+        return Self {
+            max_streams: 0.into(),
+            print_iroh_messages: false.into(),
+            print_websocket_messages: false.into()
+        }
     }
 }
 
@@ -551,6 +557,15 @@ impl ConnectionBridge {
                 _ = ctoken.cancelled() => { None }
                 msg_o = rcv.recv() => {
                     if let Some(msg) = msg_o {
+                        if self.settings.print_iroh_messages.load(Ordering::Relaxed) {
+                            println!("=======| Iroh Message: |======>");
+                            let text = match msg.as_text() {
+                                Some(text) => text,
+                                None => "NONE"
+                            };
+                            println!("{}", text);
+                            println!("<======| :Iroh Message |======");
+                        }
                         match ws.send(msg).await {
                             Err(e) => {
                                 error!("Error while sending message into WebSocket: {e}");
@@ -575,6 +590,11 @@ impl ConnectionBridge {
                         Ok(msg) => {
                             if msg.is_text() {
                                 if let Some(data) = msg.as_text() {
+                                    if self.settings.print_websocket_messages.load(Ordering::Relaxed) {
+                                        println!("------| WebSocket message: |------>");
+                                        println!("{}", data);
+                                        println!("<------| :Websocket message |------");
+                                    }
                                     let res_info = analyzer.get_info(data);
                                     match res_info {
                                         Err(e) => { error!("Error while analyzing packet from WebSocket: {}", e); },

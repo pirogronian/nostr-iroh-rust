@@ -21,7 +21,9 @@ pub struct Config {
     pub max_connections: usize,
     pub max_streams: usize,
     pub remote_id: String,
-    pub secret_key_file: Option<String>
+    pub secret_key_file: Option<String>,
+    pub print_iroh_messages: bool,
+    pub print_websocket_messages: bool
 }
 
 impl Config {
@@ -31,6 +33,8 @@ impl Config {
         println!("max_streams: {}", self.max_streams);
         println!("remote_id: {}", self.remote_id);
         println!("secret_key_file: {:?}", self.secret_key_file);
+        println!("print_iroh_messages: {:?}", self.print_iroh_messages);
+        println!("print_websocket_messages: {:?}", self.print_websocket_messages);
     }
 }
 
@@ -41,11 +45,12 @@ impl Default for Config {
             max_connections: 1000,
             max_streams: 10,
             remote_id: "".into(),
-            secret_key_file: Some("secret.prv".to_string())
+            secret_key_file: Some("secret.prv".to_string()),
+            print_iroh_messages: false,
+            print_websocket_messages: false
         }
     }
 }
-
 
 #[derive(Parser, Debug, serde::Serialize, Clone)]
 #[command(author, version, about = "Nostr-Iroh client proxy")]
@@ -70,9 +75,19 @@ pub struct CliArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret_key_file: Option<String>,
 
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub print_iroh_messages: Option<bool>,
+
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub print_websocket_messages: Option<bool>,
+
     #[arg(short, long)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<String>
+
+
 }
 
 #[derive(Error, Debug)]
@@ -94,7 +109,9 @@ impl ClientProxy {
         } )?;
 
         let bridge_settings = Arc::new(BridgeSettings {
-            max_streams: AtomicUsize::new(config.max_streams)
+            max_streams: AtomicUsize::new(config.max_streams),
+            print_iroh_messages: config.print_iroh_messages.into(),
+            print_websocket_messages: config.print_websocket_messages.into()
         });
 
         let sec: SecretKey = if let Some(s) = &config.secret_key_file {
